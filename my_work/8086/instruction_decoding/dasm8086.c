@@ -16,6 +16,9 @@ static const char *register_lookup[16] = {
 };
 #define register_lookup(w, reg) NOB_ARRAY_GET(register_lookup, (((w) << 3) | (reg)))
 
+static const char *segment_register_lookup[] = {"es", "cs", "ss", "ds"};
+#define segment_register_lookup(reg) NOB_ARRAY_GET(segment_register_lookup, (reg))
+
 static const char *effective_address_lookup[8] = {
     "bx + si",
     "bx + di",
@@ -41,6 +44,13 @@ typedef enum {
     MOV_IMM_TO_REG_SLASH_MEM,
     MOV_MEMORY_TO_ACC,
     MOV_ACC_TO_MEMORY,
+
+    PUSH_REG_SLASH_MEM,
+    PUSH_REG,
+    PUSH_SEG_REG,
+    POP_REG_SLASH_MEM,
+    POP_REG,
+    POP_SEG_REG,
 
     ADD_REG_SLASH_MEM_WITH_REG_TO_EITHER,
     ADD_IMM_TO_REG_SLASH_MEM,
@@ -97,20 +107,26 @@ static inline bool pattern_match_u8(u8 number, u8 pattern, u8 pat_len) {
 static inline bool get_op_code(u8 byte, Op_Code *out) {
     static const Op_Code op_codes[] = {
         // Load and Store Instructions (MOV)
-        { 0b100010 , 6},  // MOV: Register/memory to/from register
-        { 0b1011   , 4},  // MOV: Immediate to register
-        { 0b1100011, 7},  // MOV: Immediate to register/memory
-        { 0b1010000, 7},  // MOV: Memory to accumulator
-        { 0b1010001, 7},  // MOV: Accumulator to memory
+        { 0b10001000, 6}, // MOV: Register/memory to/from register
+        { 0b10110000, 4}, // MOV: Immediate to register
+        { 0b11000110, 7}, // MOV: Immediate to register/memory
+        { 0b10100000, 7}, // MOV: Memory to accumulator
+        { 0b10100010, 7}, // MOV: Accumulator to memory
+
+        { 0b11111111, 8}, // PUSH: Register/memory
+        { 0b01010000, 5}, // PUSH: Register
+        { 0b00000000, 3}, // PUSH/POP: Segment Register
+        { 0b10001111, 8}, // POP: Register/memory
+        { 0b01011000, 5}, // POP: Register
 
         // Arithmetic Instructions
-        { 0b000000 , 6},  // ADD: Reg/Memory with register to either
-        { 0b100000 , 6},  // ADD/SUB/CMP: Immediate to register/memory
-        { 0b0000010, 7},  // ADD: Immediate to accumulator
-        { 0b001010 , 6},  // SUB: Reg/Memory with register to either
-        { 0b0010110, 7},  // SUB: Immediate to accumulator
-        { 0b001110 , 6},  // CMP: Reg/Memory with register to either
-        { 0b0011110, 7},  // CMP: Immediate to accumulator
+        { 0b00000000, 6}, // ADD: Reg/Memory with register to either
+        { 0b10000000, 6}, // ADD/SUB/CMP: Immediate to register/memory
+        { 0b00000100, 7}, // ADD: Immediate to accumulator
+        { 0b00101000, 6}, // SUB: Reg/Memory with register to either
+        { 0b00101100, 7}, // SUB: Immediate to accumulator
+        { 0b00111000, 6}, // CMP: Reg/Memory with register to either
+        { 0b00111100, 7}, // CMP: Immediate to accumulator
 
         // Control Instructions
         { 0b01110101, 8}, // JNE/JNZ: Jump on not equal/not zero
@@ -135,8 +151,9 @@ static inline bool get_op_code(u8 byte, Op_Code *out) {
         { 0b11100001, 8}, // LOOPZ/LOOPE: Loop while zero/equal
     };
     for (u32 i = 0; i < NOB_ARRAY_LEN(op_codes); i++) {
-        if (pattern_match_u8(byte, op_codes[i].pattern, op_codes[i].pat_len)) {
-            *out = op_codes[i];
+        Op_Code oc = op_codes[i];
+        if (pattern_match_u8(byte, oc.pattern >> (8 - oc.pat_len), oc.pat_len)) {
+            *out = oc;
             return true;
         }
     }
@@ -155,40 +172,86 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
         return false;
     }
     switch (op_code.pattern) {
-    case 0b100010:
+    case 0b10001000:
         *op_kind = MOV_REG_SLASH_MEM_TO_OR_FROM_REG;
         return true;
-    case 0b1011:
+    case 0b10110000:
         *op_kind = MOV_IMM_TO_REG;
         return true;
-    case 0b1100011:
+    case 0b11000110:
         *op_kind = MOV_IMM_TO_REG_SLASH_MEM;
         return true;
-    case 0b1010000:
+    case 0b10100000:
         *op_kind = MOV_MEMORY_TO_ACC;
         return true;
-    case 0b1010001:
+    case 0b10100010:
         *op_kind = MOV_ACC_TO_MEMORY;
         return true;
-    case 0b000000:
-        *op_kind = ADD_REG_SLASH_MEM_WITH_REG_TO_EITHER;
+    case 0b11111111: {
+        // 0b11111111 [mod][xyz][r/m] [(disp-lo)] [(disp-hi)]
+        // We need to check [xyz] for op kind
+        u8 next_byte = (u8) insts.items[i + 1];
+        u8 xyz = (next_byte >> 3) & 0b111;
+        switch (xyz) {
+        case 0b110:
+            *op_kind = PUSH_REG_SLASH_MEM;
+            return true;
+        default:
+            NOB_UNREACHABLE(nob_temp_sprintf("Unhandled op_code: %.*b, and xyz: %.3b in (%.8b %.8b of form %.8b [mod][xyz][r/m]) at %s:1:%d", op_code.pat_len, op_code.pattern, xyz, byte, next_byte, byte, asm_binary_file, i + 1));
+            return false;
+        }
+        return false;
+    } break;
+    case 0b01010000:
+        *op_kind = PUSH_REG;
         return true;
-    case 0b0000010:
+    case 0b00000000: {
+        switch(byte & 0b111) {
+        case 0b110: // PUSH: Segment Register
+            *op_kind = PUSH_SEG_REG;
+            return true;
+        case 0b111: // POP: Segment Register
+            *op_kind = POP_SEG_REG;
+            return true;
+        default:
+            *op_kind = ADD_REG_SLASH_MEM_WITH_REG_TO_EITHER;
+            return true;
+        }
+    } break;
+    case 0b10001111: {
+        // 0b10001111 [mod][xyz][r/m] [(disp-lo)] [(disp-hi)]
+        // We need to check [xyz] for op kind
+        u8 next_byte = (u8) insts.items[i + 1];
+        u8 xyz = (next_byte >> 3) & 0b111;
+        switch (xyz) {
+        case 0b000:
+            *op_kind = POP_REG_SLASH_MEM;
+            return true;
+        default:
+            NOB_UNREACHABLE(nob_temp_sprintf("Unhandled op_code: %.*b, and xyz: %.3b in (%.8b %.8b of form %.8b [mod][xyz][r/m]) at %s:1:%d", op_code.pat_len, op_code.pattern, xyz, byte, next_byte, byte, asm_binary_file, i + 1));
+            return false;
+        }
+        return false;
+    } break;
+    case 0b01011000:
+        *op_kind = POP_REG;
+        return true;
+    case 0b00000100:
         *op_kind = ADD_IMM_TO_ACC;
         return true;
-    case 0b001010:
+    case 0b00101000:
         *op_kind = SUB_REG_SLASH_MEM_WITH_REG_TO_EITHER;
         return true;
-    case 0b0010110:
+    case 0b00101100:
         *op_kind = SUB_IMM_TO_ACC;
         return true;
-    case 0b001110:
+    case 0b00111000:
         *op_kind = CMP_REG_SLASH_MEM_WITH_REG_TO_EITHER;
         return true;
-    case 0b0011110:
+    case 0b00111100:
         *op_kind = CMP_IMM_TO_ACC;
         return true;
-    case 0b100000: {
+    case 0b10000000: {
         // 0b100000[s][w] [mod][xyz][r/m] [(disp-lo)] [(disp-hi)]
         // We need to check [xyz] for op kind
         if (!ensure_next_n_bytes(asm_binary_file, insts, i, 2)) return false;
@@ -277,7 +340,7 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
     return false;
 }
 
-static inline bool handle_dw_mod_reg_rm_displo_disphi(const char *inst_name, const char *asm_binary_file, Nob_String_Builder insts, u32 i, u32 *next_i, Nob_String_Builder *out) {
+static inline bool handle_dw_mod_reg_rm_displo_disphi(const char *inst_name, const char *asm_binary_file, Nob_String_Builder insts, u32 i, u32 *next_i, Nob_String_Builder *out, bool print_dst) {
     // 0bOPCODE[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
     //
     // Note that d only makes sense in case of mod != 0b11. Meaning
@@ -296,15 +359,27 @@ static inline bool handle_dw_mod_reg_rm_displo_disphi(const char *inst_name, con
         // mode = 0b11
         const char *src = register_lookup(w, reg);
         const char *dst = register_lookup(w, rm);
-        nob_sb_appendf(out, "%s %s, %s\n", inst_name, dst, src);
+        if (print_dst) {
+            nob_sb_appendf(out, "%s %s, %s\n", inst_name, dst, src);
+        } else {
+            nob_sb_appendf(out, "%s %s\n", inst_name, src);
+        }
     } else {
         u8 d = (byte >> 1) & 0b01;
 
-        #define gen_inst_directional(inst_name, out, d, expr1, arg1, expr2, arg2) do { \
+        #define gen_inst_directional(inst_name, out, d, expr1, arg1, expr2, arg2, print_dst) do { \
             if (1 == (d)) { \
-                nob_sb_appendf((out), "%s " expr1 ", " expr2 "\n", (inst_name), (arg1), (arg2)); \
+                if (print_dst) { \
+                    nob_sb_appendf((out), "%s " expr1 ", " expr2 "\n", (inst_name), (arg1), (arg2)); \
+                } else { \
+                    nob_sb_appendf((out), "%s " expr2 "\n", (inst_name), (arg2)); \
+                } \
             } else { \
-                nob_sb_appendf((out), "%s " expr2 ", " expr1 "\n", (inst_name), (arg2), (arg1)); \
+                if (print_dst) { \
+                    nob_sb_appendf((out), "%s " expr2 ", " expr1 "\n", (inst_name), (arg2), (arg1)); \
+                } else { \
+                    nob_sb_appendf((out), "%s " expr1 "\n", (inst_name), (arg1)); \
+                } \
             } \
         } while(0)
 
@@ -314,9 +389,9 @@ static inline bool handle_dw_mod_reg_rm_displo_disphi(const char *inst_name, con
             if (0b110 == rm) { // Direct Address
                 if (!ensure_next_n_bytes(asm_binary_file, insts, i, 3)) return false;
                 s16 direct_addr = (s16) disp16(insts, *next_i); *next_i += 2;
-                gen_inst_directional(inst_name, out, d, "%s", reg_name, "[%d]", direct_addr);
+                gen_inst_directional(inst_name, out, d, "%s", reg_name, "[%d]", direct_addr, print_dst);
             } else {
-                gen_inst_directional(inst_name, out, d, "%s", reg_name, "[%s]", partial_effective_expr);
+                gen_inst_directional(inst_name, out, d, "%s", reg_name, "[%s]", partial_effective_expr, print_dst);
             }
         } else { // 0b01 and 0b10
             if (!ensure_next_n_bytes(asm_binary_file, insts, i, (0b10 == mode) ? 3 : 2)) return false;
@@ -327,10 +402,10 @@ static inline bool handle_dw_mod_reg_rm_displo_disphi(const char *inst_name, con
                 off = (s16) (s8) disp8(insts, *next_i); *next_i += 1;
             }
             if (0 == off) {
-                gen_inst_directional(inst_name, out, d, "%s", reg_name, "[%s]", partial_effective_expr);
+                gen_inst_directional(inst_name, out, d, "%s", reg_name, "[%s]", partial_effective_expr, print_dst);
             } else {
                 u32 mark = nob_temp_save();
-                gen_inst_directional(inst_name, out, d, "%s", reg_name, "[%s]", nob_temp_sprintf("%s%s%d", partial_effective_expr, off < 0 ? " - " : " + ", off * (off < 0 ? -1 : 1)));
+                gen_inst_directional(inst_name, out, d, "%s", reg_name, "[%s]", nob_temp_sprintf("%s%s%d", partial_effective_expr, off < 0 ? " - " : " + ", off * (off < 0 ? -1 : 1)), print_dst);
                 nob_temp_rewind(mark);
             }
         }
@@ -436,6 +511,7 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
     if (!nob_read_entire_file(asm_binary_file, &insts)) nob_return_defer(false);
     nob_sb_appendf(out, "; Decoded assembly for %s\nbits 16\n", asm_binary_file);
     for (u32 i = 0; i < insts.count;) {
+        printf("%.*s\n", (int) out->count, out->items);
         u8 byte = (u8) insts.items[i];
         u32 next_i = i + 1;
         Op_Kind op_kind;
@@ -504,7 +580,7 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
         switch(op_kind) {
         case MOV_REG_SLASH_MEM_TO_OR_FROM_REG: {
             // 0b100010[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
-            if (!handle_dw_mod_reg_rm_displo_disphi("mov", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+            if (!handle_dw_mod_reg_rm_displo_disphi("mov", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
         } break;
         case MOV_IMM_TO_REG: {
             // 0b1011[w][reg] [data] [data if w = 1]
@@ -539,9 +615,39 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
             const char *acc_reg = register_lookup(w, 0b000);
             nob_sb_appendf(out, "mov [%d], %s\n", direct_addr, acc_reg);
         } break;
+        case PUSH_REG_SLASH_MEM: {
+            // 0b11111111 [mod]110[r/m] [(disp-lo)] [(disp-hi)]
+            if (!handle_dw_mod_reg_rm_displo_disphi("push word", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
+        } break;
+        case PUSH_REG: {
+            // 0b01010[reg]
+            u8 reg = byte & 0b111;
+            nob_sb_appendf(out, "push %s\n", register_lookup(1, reg));
+        } break;
+        case PUSH_SEG_REG: {
+            // 0b000[reg]110
+            // Note that reg is a segment register encoded as 2-bits
+            u8 reg = (byte >> 3) & 0b11;
+            nob_sb_appendf(out, "push %s\n", segment_register_lookup(reg));
+        } break;
+        case POP_REG_SLASH_MEM: {
+            // 0b10001111 [mod]110[r/m] [(disp-lo)] [(disp-hi)]
+            if (!handle_dw_mod_reg_rm_displo_disphi("pop word", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
+        } break;
+        case POP_REG: {
+            // 0b01011[reg]
+            u8 reg = byte & 0b111;
+            nob_sb_appendf(out, "pop %s\n", register_lookup(1, reg));
+        } break;
+        case POP_SEG_REG: {
+            // 0b000[reg]111
+            // Note that reg is a segment register encoded as 2-bits
+            u8 reg = (byte >> 3) & 0b11;
+            nob_sb_appendf(out, "pop %s\n", segment_register_lookup(reg));
+        } break;
         case ADD_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
             // 0b000000[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
-            if (!handle_dw_mod_reg_rm_displo_disphi("add", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+            if (!handle_dw_mod_reg_rm_displo_disphi("add", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
         } break;
         case ADD_IMM_TO_REG_SLASH_MEM: {
             // 0b100000[s][w] [mod]000[r/m] [(disp-lo)] [(disp-hi)] [data] [data if w = 1]
@@ -553,7 +659,7 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
         } break;
         case SUB_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
             // 0b001010[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
-            if (!handle_dw_mod_reg_rm_displo_disphi("sub", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+            if (!handle_dw_mod_reg_rm_displo_disphi("sub", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
         } break;
         case SUB_IMM_TO_REG_SLASH_MEM: {
             // 0b100000[s][w] [mod]101[r/m] [(disp-lo)] [(disp-hi)] [data] [data if w = 1]
@@ -565,7 +671,7 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
         } break;
         case CMP_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
             // 0b001110[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
-            if (!handle_dw_mod_reg_rm_displo_disphi("cmp", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+            if (!handle_dw_mod_reg_rm_displo_disphi("cmp", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
         } break;
         case CMP_IMM_TO_REG_SLASH_MEM: {
             // 0b100000[s][w] [mod]111[r/m] [(disp-lo)] [(disp-hi)] [data] [data if w = 1]
