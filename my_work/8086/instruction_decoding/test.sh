@@ -27,5 +27,7 @@ test_listing "listing_0037_single_register_mov"
 test_listing "listing_0038_many_register_mov"
 test_listing "listing_0039_more_movs"
 test_listing "listing_0040_challenge_movs"
+test_listing "listing_0041_add_sub_cmp_jnz"
+# test_listing "listing_0042_completionist_decode" TOO HARD FOR ME RIGHT NOW :(. I will look into this later, and move on with the course.
 
 set +e

@@ -1,4 +1,6 @@
 my_work/haversine_problem/data_10000000_flex.json
 *.exe
 *.old
+*.swp
+*.swo
 my_work/8086/instruction_decoding/temp/

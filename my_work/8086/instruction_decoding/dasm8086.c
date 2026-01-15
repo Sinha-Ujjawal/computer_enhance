@@ -8,33 +8,134 @@ typedef int8_t   s8;
 typedef int16_t  s16;
 typedef int32_t  s32;
 
-static inline u8 bit_width_u8(u8 x) {
-    if (0 == x) return 0;
-    return 8 - __builtin_clz(x);
+static const char *register_lookup[16] = {
+    "al", "cl", "dl", "bl",
+    "ah", "ch", "dh", "bh",
+    "ax", "cx", "dx", "bx",
+    "sp", "bp", "si", "di",
+};
+#define register_lookup(w, reg) NOB_ARRAY_GET(register_lookup, (((w) << 3) | (reg)))
+
+static const char *effective_address_lookup[8] = {
+    "bx + si",
+    "bx + di",
+    "bp + si",
+    "bp + di",
+    "si",
+    "di",
+    "bp",
+    "bx",
+};
+
+#define disp8(insts, i) ((u8) (insts).items[(i)])
+#define disp16(insts, i) ((((u16) (u8) ((insts).items[(i) + 1])) << 8) | ((u16) (u8) ((insts).items[(i)])))
+
+typedef struct {
+    u8 pattern;
+    u8 pat_len;
+} Op_Code;
+
+typedef enum {
+    MOV_REG_SLASH_MEM_TO_OR_FROM_REG,
+    MOV_IMM_TO_REG,
+    MOV_IMM_TO_REG_SLASH_MEM,
+    MOV_MEMORY_TO_ACC,
+    MOV_ACC_TO_MEMORY,
+
+    ADD_REG_SLASH_MEM_WITH_REG_TO_EITHER,
+    ADD_IMM_TO_REG_SLASH_MEM,
+    ADD_IMM_TO_ACC,
+
+    SUB_REG_SLASH_MEM_WITH_REG_TO_EITHER,
+    SUB_IMM_TO_REG_SLASH_MEM,
+    SUB_IMM_TO_ACC,
+
+    CMP_REG_SLASH_MEM_WITH_REG_TO_EITHER,
+    CMP_IMM_TO_REG_SLASH_MEM,
+    CMP_IMM_TO_ACC,
+
+    JNE_OR_JNZ,
+    JE_OR_JZ,
+    JL_OR_JNGE,
+    JNL_OR_JGE,
+    JLE_OR_JNG,
+    JNLE_OR_JG,
+    JB_OR_JNAE,
+    JNB_OR_JAE,
+    JBE_OR_JNA,
+    JNBE_OR_JA,
+    JP_OR_JPE,
+    JNP_OR_JPO,
+    JOVFLOW,
+    JNOVFLOW,
+    JSIGN,
+    JNSIGN,
+    LOOP,
+    JCXZ,
+    LOOPNZ_OR_LOOPNE,
+    LOOPZ_OR_LOOPE,
+
+    OP_KIND_COUNT,
+} Op_Kind;
+
+static inline bool ensure_next_n_bytes(const char *asm_binary_file, Nob_String_Builder insts, u32 i, u8 n) {
+    if (i >= insts.count) {
+        nob_log(NOB_ERROR, "Index out of bounds (i: %d) when checking next n bytes", i);
+        return false;
+    }
+    if (i + n > insts.count) {
+        nob_log(NOB_ERROR, "Expected %d additional byte(s) after %s:1:%d", n, asm_binary_file, i + 1);
+        return false;
+    }
+    return true;
 }
 
-static inline bool pattern_match_u8(u8 number, u8 pattern) {
-    if (0 == pattern) return true;
-    if (0 == number) return false;
-
-    u8 n_len = bit_width_u8(number);
-    u8 p_len = bit_width_u8(pattern);
-
-    if (n_len < p_len) return false;
-
-    return (number >> (n_len - p_len)) == pattern;
+static inline bool pattern_match_u8(u8 number, u8 pattern, u8 pat_len) {
+   return (number >> (8 - pat_len)) == pattern;
 }
 
-static inline bool get_op_code(u8 byte, u8 *out) {
-    static u8 op_codes[] = {
-        0b100010,  // MOV: Register/memory to/from register
-        0b1011,    // MOV: Immediate to register
-        0b1100011, // MOV: Immediate to register/memory
-        0b1010000, // MOV: Memory to accumulator
-        0b1010001, // MOV: Accumulator to memory
+static inline bool get_op_code(u8 byte, Op_Code *out) {
+    static const Op_Code op_codes[] = {
+        // Load and Store Instructions (MOV)
+        { 0b100010 , 6},  // MOV: Register/memory to/from register
+        { 0b1011   , 4},  // MOV: Immediate to register
+        { 0b1100011, 7},  // MOV: Immediate to register/memory
+        { 0b1010000, 7},  // MOV: Memory to accumulator
+        { 0b1010001, 7},  // MOV: Accumulator to memory
+
+        // Arithmetic Instructions
+        { 0b000000 , 6},  // ADD: Reg/Memory with register to either
+        { 0b100000 , 6},  // ADD/SUB/CMP: Immediate to register/memory
+        { 0b0000010, 7},  // ADD: Immediate to accumulator
+        { 0b001010 , 6},  // SUB: Reg/Memory with register to either
+        { 0b0010110, 7},  // SUB: Immediate to accumulator
+        { 0b001110 , 6},  // CMP: Reg/Memory with register to either
+        { 0b0011110, 7},  // CMP: Immediate to accumulator
+
+        // Control Instructions
+        { 0b01110101, 8}, // JNE/JNZ: Jump on not equal/not zero
+        { 0b01110100, 8}, // JE/JZ: Jump on equal/zero
+        { 0b01111100, 8}, // JL/JNGE: Jump on less/not greater or equal
+        { 0b01111101, 8}, // JNL/JGE: Jump on not less/greater or equal
+        { 0b01111110, 8}, // JLE/JNG: Jump on less or equal/not greater
+        { 0b01111111, 8}, // JNLE/JG: Jump on not less or equal/greater
+        { 0b01110010, 8}, // JB/JNAE: Jump on below/not above or equal
+        { 0b01110011, 8}, // JNB/JAE: Jump on not below/above or equal
+        { 0b01110110, 8}, // JBE/JNA: Jump on below or equal/not above
+        { 0b01110111, 8}, // JNBE/JA: Jump on not below or equal/above
+        { 0b01111010, 8}, // JP/JPE: Jump on parity/parity even
+        { 0b01111011, 8}, // JNP/JPO: Jump on not par/par odd
+        { 0b01110000, 8}, // JO: Jump on overflow
+        { 0b01110001, 8}, // JNO: Jump on not overflow
+        { 0b01111000, 8}, // JS: Jump on sign
+        { 0b01111001, 8}, // JNS: Jump on not sign
+        { 0b11100010, 8}, // LOOP: Loop CX times
+        { 0b11100011, 8}, // JCXZ: Jump on CX zero
+        { 0b11100000, 8}, // LOOPNZ/LOOPNE: Loop while not zero/equal
+        { 0b11100001, 8}, // LOOPZ/LOOPE: Loop while zero/equal
     };
-    for (size_t i = 0; i < NOB_ARRAY_LEN(op_codes); i++) {
-        if (pattern_match_u8(byte, op_codes[i])) {
+    for (u32 i = 0; i < NOB_ARRAY_LEN(op_codes); i++) {
+        if (pattern_match_u8(byte, op_codes[i].pattern, op_codes[i].pat_len)) {
             *out = op_codes[i];
             return true;
         }
@@ -42,45 +143,303 @@ static inline bool get_op_code(u8 byte, u8 *out) {
     return false;
 }
 
-bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
-    #define ensure_next_n_bytes(asm_binary_file, insts, i, n) do \
-        if (i + (n) >= insts.count) { \
-            nob_log(NOB_ERROR, "Expected %d additional byte(s) after %s:1:%zu", (n), asm_binary_file, i + 1); \
-            nob_return_defer(false); \
+static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder insts, u32 i, Op_Kind *op_kind) {
+    if (i >= insts.count) {
+        nob_log(NOB_ERROR, "Index out of bounds (i: %d) when trying to get the Op Kind from the instructions", i);
+        return false;
+    }
+    u8 byte = (u8) insts.items[i];
+    Op_Code op_code;
+    if (!get_op_code(byte, &op_code)) {
+        nob_log(NOB_ERROR, "Could not extract op_code from first byte (%.8b) of %s:1:%d", byte, asm_binary_file, i + 1);
+        return false;
+    }
+    switch (op_code.pattern) {
+    case 0b100010:
+        *op_kind = MOV_REG_SLASH_MEM_TO_OR_FROM_REG;
+        return true;
+    case 0b1011:
+        *op_kind = MOV_IMM_TO_REG;
+        return true;
+    case 0b1100011:
+        *op_kind = MOV_IMM_TO_REG_SLASH_MEM;
+        return true;
+    case 0b1010000:
+        *op_kind = MOV_MEMORY_TO_ACC;
+        return true;
+    case 0b1010001:
+        *op_kind = MOV_ACC_TO_MEMORY;
+        return true;
+    case 0b000000:
+        *op_kind = ADD_REG_SLASH_MEM_WITH_REG_TO_EITHER;
+        return true;
+    case 0b0000010:
+        *op_kind = ADD_IMM_TO_ACC;
+        return true;
+    case 0b001010:
+        *op_kind = SUB_REG_SLASH_MEM_WITH_REG_TO_EITHER;
+        return true;
+    case 0b0010110:
+        *op_kind = SUB_IMM_TO_ACC;
+        return true;
+    case 0b001110:
+        *op_kind = CMP_REG_SLASH_MEM_WITH_REG_TO_EITHER;
+        return true;
+    case 0b0011110:
+        *op_kind = CMP_IMM_TO_ACC;
+        return true;
+    case 0b100000: {
+        // 0b100000[s][w] [mod][xyz][r/m] [(disp-lo)] [(disp-hi)]
+        // We need to check [xyz] for op kind
+        if (!ensure_next_n_bytes(asm_binary_file, insts, i, 2)) return false;
+        u8 next_byte = (u8) insts.items[i + 1];
+        u8 xyz = (next_byte >> 3) & 0b111;
+        switch (xyz) {
+        case 0b000:
+            *op_kind = ADD_IMM_TO_REG_SLASH_MEM;
+            return true;
+        case 0b101:
+            *op_kind = SUB_IMM_TO_REG_SLASH_MEM;
+            return true;
+        case 0b111:
+            *op_kind = CMP_IMM_TO_REG_SLASH_MEM;
+            return true;
+        default:
+            NOB_UNREACHABLE(nob_temp_sprintf("Unhandled op_code: %.*b, and xyz: %.3b in (%.8b %.8b of form %.8b [mod][xyz][r/m]) at %s:1:%d", op_code.pat_len, op_code.pattern, xyz, byte, next_byte, byte, asm_binary_file, i + 1));
+            return false;
+        }
+        return false;
+    } break;
+    case 0b01110101:
+        *op_kind = JNE_OR_JNZ;
+        return true;
+    case 0b01110100:
+        *op_kind = JE_OR_JZ;
+        return true;
+    case 0b01111100:
+        *op_kind = JL_OR_JNGE;
+        return true;
+    case 0b01111101:
+        *op_kind = JNL_OR_JGE;
+        return true;
+    case 0b01111110:
+        *op_kind = JLE_OR_JNG;
+        return true;
+    case 0b01111111:
+        *op_kind = JNLE_OR_JG;
+        return true;
+    case 0b01110010:
+        *op_kind = JB_OR_JNAE;
+        return true;
+    case 0b01110011:
+        *op_kind = JNB_OR_JAE;
+        return true;
+    case 0b01110110:
+        *op_kind = JBE_OR_JNA;
+        return true;
+    case 0b01110111:
+        *op_kind = JNBE_OR_JA;
+        return true;
+    case 0b01111010:
+        *op_kind = JP_OR_JPE;
+        return true;
+    case 0b01111011:
+        *op_kind = JNP_OR_JPO;
+        return true;
+    case 0b01110000:
+        *op_kind = JOVFLOW;
+        return true;
+    case 0b01110001:
+        *op_kind = JNOVFLOW;
+        return true;
+    case 0b01111000:
+        *op_kind = JSIGN;
+        return true;
+    case 0b01111001:
+        *op_kind = JNSIGN;
+        return true;
+    case 0b11100010:
+        *op_kind = LOOP;
+        return true;
+    case 0b11100011:
+        *op_kind = JCXZ;
+        return true;
+    case 0b11100000:
+        *op_kind = LOOPNZ_OR_LOOPNE;
+        return true;
+    case 0b11100001:
+        *op_kind = LOOPZ_OR_LOOPE;
+        return true;
+    default:
+        NOB_UNREACHABLE(nob_temp_sprintf("Unhandled op_code: %.*b at %s:1:%d", op_code.pat_len, op_code.pattern, asm_binary_file, i + 1));
+        return false;
+    }
+    return false;
+}
+
+static inline bool handle_dw_mod_reg_rm_displo_disphi(const char *inst_name, const char *asm_binary_file, Nob_String_Builder insts, u32 i, u32 *next_i, Nob_String_Builder *out) {
+    // 0bOPCODE[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
+    //
+    // Note that d only makes sense in case of mod != 0b11. Meaning
+    // the assembler needs to encode
+    // store, [inst_name] [] reg, d = 0
+    // load,  [inst_name] reg [], d = 1
+    //
+    if (!ensure_next_n_bytes(asm_binary_file, insts, i, 1)) return false;
+    u8 byte = (u8) insts.items[i];
+    u8 next_byte = (u8) insts.items[*next_i]; *next_i += 1;
+    u8 mode = next_byte >> 6;
+    u8 reg = (next_byte >> 3) & 0b111;
+    u8 rm  = (next_byte >> 0) & 0b111;
+    u8 w = byte & 0b01;
+    if (0b11 == mode) {
+        // mode = 0b11
+        const char *src = register_lookup(w, reg);
+        const char *dst = register_lookup(w, rm);
+        nob_sb_appendf(out, "%s %s, %s\n", inst_name, dst, src);
+    } else {
+        u8 d = (byte >> 1) & 0b01;
+
+        #define gen_inst_directional(inst_name, out, d, expr1, arg1, expr2, arg2) do { \
+            if (1 == (d)) { \
+                nob_sb_appendf((out), "%s " expr1 ", " expr2 "\n", (inst_name), (arg1), (arg2)); \
+            } else { \
+                nob_sb_appendf((out), "%s " expr2 ", " expr1 "\n", (inst_name), (arg2), (arg1)); \
+            } \
+        } while(0)
+
+        const char *reg_name = register_lookup(w, reg);
+        const char *partial_effective_expr = effective_address_lookup[rm];
+        if (0b00 == mode) {
+            if (0b110 == rm) { // Direct Address
+                if (!ensure_next_n_bytes(asm_binary_file, insts, i, 3)) return false;
+                s16 direct_addr = (s16) disp16(insts, *next_i); *next_i += 2;
+                gen_inst_directional(inst_name, out, d, "%s", reg_name, "[%d]", direct_addr);
+            } else {
+                gen_inst_directional(inst_name, out, d, "%s", reg_name, "[%s]", partial_effective_expr);
+            }
+        } else { // 0b01 and 0b10
+            if (!ensure_next_n_bytes(asm_binary_file, insts, i, (0b10 == mode) ? 3 : 2)) return false;
+            s16 off;
+            if (0b10 == mode) {
+                off = (s16) disp16(insts, *next_i); *next_i += 2;
+            } else {
+                off = (s16) (s8) disp8(insts, *next_i); *next_i += 1;
+            }
+            if (0 == off) {
+                gen_inst_directional(inst_name, out, d, "%s", reg_name, "[%s]", partial_effective_expr);
+            } else {
+                u32 mark = nob_temp_save();
+                gen_inst_directional(inst_name, out, d, "%s", reg_name, "[%s]", nob_temp_sprintf("%s%s%d", partial_effective_expr, off < 0 ? " - " : " + ", off * (off < 0 ? -1 : 1)));
+                nob_temp_rewind(mark);
+            }
+        }
+    }
+    return true;
+}
+
+static inline bool handle_sw_mod_rm_displo_disphi_data(const char *inst_name, const char *asm_binary_file, Nob_String_Builder insts, u32 i, u32 *next_i, Nob_String_Builder *out, bool sign_bit) {
+    // if sign_bit = false
+    // 0bOPCODE[w]    [mod]???[r/m] [(disp-lo)] [(disp-hi)] [data] [data if w = 1]
+    // if sign_bit = true
+    // 0bOPCODE[s][w] [mod]???[r/m] [(disp-lo)] [(disp-hi)] [data] [data if s:w = 01]
+    u8 byte = (u8) insts.items[i];
+    if (!ensure_next_n_bytes(asm_binary_file, insts, i, 1)) return false;
+    u8 next_byte = (u8) insts.items[*next_i]; *next_i += 1;
+    u8 mode = next_byte >> 6;
+    u8 rm = next_byte & 0b111;
+    u8 w = byte & 0b01;
+    bool is_wide = 1 == w;
+    bool is_signed = false;
+    bool read_two_bytes = false;
+    if (sign_bit) {
+        u8 sw = byte & 0b11;
+        read_two_bytes = 0b01 == sw;
+        is_signed = (sw >> 1) == 1;
+    } else {
+        read_two_bytes = is_wide;
+        is_signed = true;
+    }
+    if (0b11 == mode) {
+        nob_sb_appendf(out, "%s %s", inst_name, register_lookup(w, rm));
+    }
+    else {
+        const char *partial_effective_expr = effective_address_lookup[rm];
+        if (0b00 == mode) {
+            if (0b110 == rm) { // Direct Address
+                if (!ensure_next_n_bytes(asm_binary_file, insts, i, read_two_bytes ? 5 : 4)) return false;
+                s16 direct_addr = (s16) disp16(insts, *next_i); *next_i += 2;
+                nob_sb_appendf(out, "%s [%d]", inst_name, direct_addr);
+            } else {
+                if (!ensure_next_n_bytes(asm_binary_file, insts, i, read_two_bytes ? 3 : 2)) return false;
+                nob_sb_appendf(out, "%s [%s]", inst_name, partial_effective_expr);
+            }
+        } else { // 0b01 and 0b10
+            if (!ensure_next_n_bytes(asm_binary_file, insts, i, ((0b10 == mode) ? 3 : 2) + (read_two_bytes ? 2 : 1))) return false;
+            s16 off;
+            if (0b10 == mode) {
+                off = (s16) disp16(insts, *next_i); *next_i += 2;
+            } else {
+                off = (s16) (s8) disp8(insts, *next_i); *next_i += 1;
+            }
+            if (0 == off) {
+                nob_sb_appendf(out, "%s [%s]", inst_name, partial_effective_expr);
+            } else {
+                nob_sb_appendf(out, "%s [%s%s%d]", inst_name, partial_effective_expr, off < 0 ? " - " : " + ", off * (off < 0 ? -1 : 1));
+            }
+        }
+    }
+    #define temp(wide_type, short_type, insts, next_i, is_wide, read_two_bytes) do { \
+        wide_type immediate_value; \
+        if (read_two_bytes) { \
+            immediate_value = (wide_type) disp16(insts, *next_i); *next_i += 2; \
+        } else { \
+            immediate_value = (wide_type) (short_type) disp8(insts, *next_i); *next_i += 1; \
         } \
-    while(0); \
+        nob_sb_appendf(out, ", %s %d\n", is_wide ? "word" : "byte", immediate_value); \
+    } while(0);
+    if (is_signed) {
+        temp(s16, s8, insts, next_i, is_wide, read_two_bytes);
+    } else {
+        temp(u16, u8, insts, next_i, is_wide, read_two_bytes);
+    }
+    return true;
+}
 
-    #define disp8(insts, i) ((s8) (u8) (insts).items[(i)])
-    #define disp16(insts, i) ((s16) ((((u16) (u8) ((insts).items[(i) + 1])) << 8) | ((u16) (u8) ((insts).items[(i)]))))
+static inline bool handle_arith_imm_to_acc(const char *inst_name, const char *asm_binary_file, Nob_String_Builder insts, u32 i, u32 *next_i, Nob_String_Builder *out) {
+    // 0bOPCODE[w] [data] [data if w = 1]
+    u8 byte = (u8) insts.items[i];
+    u8 w = byte & 0b01;
+    if (!ensure_next_n_bytes(asm_binary_file, insts, i, 1 == w ? 3 : 2)) return false;
+    const char *acc_reg = register_lookup(w, 0b000);
+    s16 immediate_value;
+    if (1 == w) {
+        immediate_value = (s16) disp16(insts, *next_i); *next_i += 2;
+    } else {
+        immediate_value = (s16) (s8) disp8(insts, *next_i); *next_i += 1;
+    }
+    nob_sb_appendf(out, "%s %s, %d\n", inst_name, acc_reg, immediate_value);
+    return true;
+}
 
-    static const char *register_lookup[16] = {
-        "al", "cl", "dl", "bl",
-        "ah", "ch", "dh", "bh",
-        "ax", "cx", "dx", "bx",
-        "sp", "bp", "si", "di",
-    };
-    #define register_lookup(w, reg) NOB_ARRAY_GET(register_lookup, (((w) << 3) | (reg)))
-    static const char *effective_address_lookup[8] = {
-        "bx + si",
-        "bx + di",
-        "bp + si",
-        "bp + di",
-        "si",
-        "di",
-        "bp",
-        "bx",
-    };
+static inline bool handle_jumps(const char *inst_name, const char *asm_binary_file, Nob_String_Builder insts, u32 i, u32 *next_i, Nob_String_Builder *out) {
+    // 0b01110101 [IP-INC8]
+    if (!ensure_next_n_bytes(asm_binary_file, insts, i, 2)) return false;
+    s16 ip_inc8 = (s16) (s8) insts.items[i + 1]; *next_i += 1;
+    nob_sb_appendf(out, "%s ($+2)+%d\n", inst_name, ip_inc8);
+    return true;
+}
 
+bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
     bool result = false;
     Nob_String_Builder insts = {0};
     if (!nob_read_entire_file(asm_binary_file, &insts)) nob_return_defer(false);
     nob_sb_appendf(out, "; Decoded assembly for %s\nbits 16\n", asm_binary_file);
-    for (size_t i = 0; i < insts.count;) {
-        size_t next_i = i + 1;
+    for (u32 i = 0; i < insts.count;) {
         u8 byte = (u8) insts.items[i];
-        u8 op_code;
-        if (!get_op_code(byte, &op_code)) {
-            nob_log(NOB_ERROR, "Could not extract op_code from first byte (%.8b) of %s:1:%zu", byte, asm_binary_file, i + 1);
+        u32 next_i = i + 1;
+        Op_Kind op_kind;
+        if (!get_op_kind(asm_binary_file, insts, i, &op_kind)) {
             nob_return_defer(false);
         }
         // d 0 - Instruction source is specified in <reg> field
@@ -142,137 +501,177 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
         //   11  101 di+d16    (16 bits displacement)
         //   11  110 bp+d16    (16 bits displacement)
         //   11  111 bx+d16    (16 bits displacement)
-        switch(op_code) {
-        case 0b100010: { // MOV: Register/memory to/from register
+        switch(op_kind) {
+        case MOV_REG_SLASH_MEM_TO_OR_FROM_REG: {
             // 0b100010[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
-            //
-            // Note that d only makes sense in case of mod != 0b11. Meaning
-            // the assembler needs to encode
-            // store, mov [] reg, d = 0
-            // load,  mov reg [], d = 1
-            //
-
-            ensure_next_n_bytes(asm_binary_file, insts, i, 1);
-            u8 next_byte = (u8) insts.items[next_i]; next_i += 1;
-            u8 mode = next_byte >> 6;
-            u8 reg = (next_byte >> 3) & 0b111;
-            u8 rm  = (next_byte >> 0) & 0b111;
-            u8 w = byte & 0b01;
-            if (0b11 == mode) {
-                // mode = 0b11
-                const char *src = register_lookup(w, reg);
-                const char *dst = register_lookup(w, rm);
-                nob_sb_appendf(out, "mov %s, %s\n", dst, src);
-            } else {
-                u8 d = (byte >> 1) & 0b01;
-
-                #define dmove(out, d, expr1, arg1, expr2, arg2) do { \
-                    if (1 == (d)) { \
-                        nob_sb_appendf((out), "mov " expr1 ", " expr2 "\n", (arg1), (arg2)); \
-                    } else { \
-                        nob_sb_appendf((out), "mov " expr2 ", " expr1 "\n", (arg2), (arg1)); \
-                    } \
-                } while(0)
-
-                const char *reg_name = register_lookup(w, reg);
-                const char *partial_effective_expr = effective_address_lookup[rm];
-                if (0b00 == mode) {
-                    if (0b110 == rm) { // Direct Address
-                        ensure_next_n_bytes(asm_binary_file, insts, i, 3);
-                        s16 direct_addr = disp16(insts, next_i); next_i += 2;
-                        dmove(out, d, "%s", reg_name, "[%d]", direct_addr);
-                    } else {
-                        dmove(out, d, "%s", reg_name, "[%s]", partial_effective_expr);
-                    }
-                } else { // 0b01 and 0b10
-                    ensure_next_n_bytes(asm_binary_file, insts, i, (0b10 == mode) ? 3 : 2);
-                    s16 off;
-                    if (0b10 == mode) {
-                        off = disp16(insts, next_i); next_i += 2;
-                    } else {
-                        off = disp8(insts, next_i); next_i += 1;
-                    }
-                    if (off == 0) {
-                        dmove(out, d, "%s", reg_name, "[%s]", partial_effective_expr);
-                    } else {
-                        size_t mark = nob_temp_save();
-                        dmove(out, d, "%s", reg_name, "[%s]", nob_temp_sprintf("%s%s%d", partial_effective_expr, off < 0 ? " - " : " + ", off * (off < 0 ? -1 : 1)));
-                        nob_temp_rewind(mark);
-                    }
-                }
-            }
+            if (!handle_dw_mod_reg_rm_displo_disphi("mov", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
         } break;
-        case 0b1011: { // MOV: Immediate to register
+        case MOV_IMM_TO_REG: {
             // 0b1011[w][reg] [data] [data if w = 1]
             u8 w = (byte >> 3) & 0b01;
             const char *reg = NOB_ARRAY_GET(register_lookup, (byte & 0b1111));
-            ensure_next_n_bytes(asm_binary_file, insts, i, (1 == w) ? 2 : 1);
+            if (!ensure_next_n_bytes(asm_binary_file, insts, i, (1 == w) ? 2 : 1)) nob_return_defer(false);
             s16 immediate_value;
             if (1 == w) {
-                immediate_value = disp16(insts, next_i); next_i += 2;
+                immediate_value = (s16) disp16(insts, next_i); next_i += 2;
             } else {
-                immediate_value = disp8(insts, next_i); next_i += 1;
+                immediate_value = (s16) (s8) disp8(insts, next_i); next_i += 1;
             }
             nob_sb_appendf(out, "mov %s, %d\n", reg, immediate_value);
         } break;
-        case 0b1100011: { // MOV: Immediate to register/memory
+        case MOV_IMM_TO_REG_SLASH_MEM: {
             // 0b1100011[w] [mod]000[r/m] [(disp-lo)] [(disp-hi)] [data] [data if w = 1]
-            u8 w = byte & 0b01;
-            ensure_next_n_bytes(asm_binary_file, insts, i, 1);
-            u8 next_byte = (u8) insts.items[next_i]; next_i += 1;
-            u8 mode = next_byte >> 6;
-            u8 rm = next_byte & 0b111;
-            if (0b11 == mode) {
-                nob_log(NOB_ERROR, "Unexpected mode value: %.2b, expected one of 00, 01 or 10 at %s:1:%zu", mode, asm_binary_file, i + 2);
-                nob_return_defer(false);
-            } else {
-                const char *partial_effective_expr = effective_address_lookup[rm];
-                if (0b00 == mode) {
-                    if (0b110 == rm) { // Direct Address
-                        ensure_next_n_bytes(asm_binary_file, insts, i, 1 == w ? 5 : 4);
-                        s16 direct_addr = disp16(insts, next_i); next_i += 2;
-                        nob_sb_appendf(out, "mov [%d]", direct_addr);
-                    } else {
-                        ensure_next_n_bytes(asm_binary_file, insts, i, 1 == w ? 3 : 2);
-                        nob_sb_appendf(out, "mov [%s]", partial_effective_expr);
-                    }
-                } else { // 0b01 and 0b10
-                    ensure_next_n_bytes(asm_binary_file, insts, i, ((0b10 == mode) ? 3 : 2) + (1 == w ? 2 : 1));
-                    s16 off;
-                    if (0b10 == mode) {
-                        off = disp16(insts, next_i); next_i += 2;
-                    } else {
-                        off = disp8(insts, next_i); next_i += 1;
-                    }
-                    if (off == 0) {
-                        nob_sb_appendf(out, "mov [%s]", partial_effective_expr);
-                    } else {
-                        nob_sb_appendf(out, "mov [%s%s%d]", partial_effective_expr, off < 0 ? " - " : " + ", off * (off < 0 ? -1 : 1));
-                    }
-                }
-                s16 immediate_value;
-                if (1 == w) {
-                    immediate_value = disp16(insts, next_i); next_i += 2;
-                } else {
-                    immediate_value = disp8(insts, next_i); next_i += 1;
-                }
-                nob_sb_appendf(out, ", %s %d\n", 1 == w ? "word" : "byte", immediate_value);
-            }
+            if (!handle_sw_mod_rm_displo_disphi_data("mov", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
         } break;
-        case 0b1010000: { // MOV: Memory to accumulator
+        case MOV_MEMORY_TO_ACC: {
             // 0b1010000[w] [addr-lo] [addr-hi]
-            ensure_next_n_bytes(asm_binary_file, insts, i, 2);
-            s16 direct_addr = disp16(insts, next_i); next_i += 2;
-            nob_sb_appendf(out, "mov ax, [%d]\n", direct_addr);
+            if (!ensure_next_n_bytes(asm_binary_file, insts, i, 2)) nob_return_defer(false);
+            s16 direct_addr = (s16) disp16(insts, next_i); next_i += 2;
+            u8 w = byte & 0b01;
+            const char *acc_reg = register_lookup(w, 0b000);
+            nob_sb_appendf(out, "mov %s, [%d]\n", acc_reg, direct_addr);
         } break;
-        case 0b1010001: { // MOV: Accumulator to memory
+        case MOV_ACC_TO_MEMORY: {
             // 0b1010001[w] [addr-lo] [addr-hi]
-            ensure_next_n_bytes(asm_binary_file, insts, i, 2);
-            s16 direct_addr = disp16(insts, next_i); next_i += 2;
-            nob_sb_appendf(out, "mov [%d], ax\n", direct_addr);
+            if (!ensure_next_n_bytes(asm_binary_file, insts, i, 2)) nob_return_defer(false);
+            s16 direct_addr = (s16) disp16(insts, next_i); next_i += 2;
+            u8 w = byte & 0b01;
+            const char *acc_reg = register_lookup(w, 0b000);
+            nob_sb_appendf(out, "mov [%d], %s\n", direct_addr, acc_reg);
         } break;
+        case ADD_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
+            // 0b000000[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
+            if (!handle_dw_mod_reg_rm_displo_disphi("add", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case ADD_IMM_TO_REG_SLASH_MEM: {
+            // 0b100000[s][w] [mod]000[r/m] [(disp-lo)] [(disp-hi)] [data] [data if w = 1]
+            if (!handle_sw_mod_rm_displo_disphi_data("add", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
+        } break;
+        case ADD_IMM_TO_ACC: {
+            // 0b0000010[w] [data] [data if w = 1]
+            if (!handle_arith_imm_to_acc("add", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case SUB_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
+            // 0b001010[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
+            if (!handle_dw_mod_reg_rm_displo_disphi("sub", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case SUB_IMM_TO_REG_SLASH_MEM: {
+            // 0b100000[s][w] [mod]101[r/m] [(disp-lo)] [(disp-hi)] [data] [data if w = 1]
+            if (!handle_sw_mod_rm_displo_disphi_data("sub", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
+        } break;
+        case SUB_IMM_TO_ACC: {
+            // 0b0010110[w] [data] [data if w = 1]
+            if (!handle_arith_imm_to_acc("sub", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case CMP_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
+            // 0b001110[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
+            if (!handle_dw_mod_reg_rm_displo_disphi("cmp", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case CMP_IMM_TO_REG_SLASH_MEM: {
+            // 0b100000[s][w] [mod]111[r/m] [(disp-lo)] [(disp-hi)] [data] [data if w = 1]
+            if (!handle_sw_mod_rm_displo_disphi_data("cmp", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
+        } break;
+        case CMP_IMM_TO_ACC: {
+            // 0b0011110[w] [data] [data if w = 1]
+            if (!handle_arith_imm_to_acc("cmp", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case JNE_OR_JNZ: {
+            // 0b01110101 [IP-INC8]
+            nob_sb_append_cstr(out, ";jne/jnz\n");
+            if (!handle_jumps("jne", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case JE_OR_JZ: {
+            // 0b01110100 [IP-INC8]
+            nob_sb_append_cstr(out, ";je/jz\n");
+            if (!handle_jumps("je", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case JL_OR_JNGE: {
+            // 0b01111100 [IP-INC8]
+            nob_sb_append_cstr(out, ";jl/jnge\n");
+            if (!handle_jumps("jl", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case JNL_OR_JGE: {
+            // 0b01111101 [IP-INC8]
+            nob_sb_append_cstr(out, ";jnl/jge\n");
+            if (!handle_jumps("jnl", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case JLE_OR_JNG: {
+            // 0b01111110 [IP-INC8]
+            nob_sb_append_cstr(out, ";jle/jng\n");
+            if (!handle_jumps("jle", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case JNLE_OR_JG: {
+            // 0b01111111 [IP-INC8]
+            nob_sb_append_cstr(out, ";jnle/jg\n");
+            if (!handle_jumps("jnle", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case JB_OR_JNAE: {
+            // 0b01110010 [IP-INC8]
+            nob_sb_append_cstr(out, ";jb/jnae\n");
+            if (!handle_jumps("jb", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case JNB_OR_JAE: {
+            // 0b01110011 [IP-INC8]
+            nob_sb_append_cstr(out, ";jnb/jae\n");
+            if (!handle_jumps("jnb", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case JBE_OR_JNA: {
+            // 0b01110110 [IP-INC8]
+            nob_sb_append_cstr(out, ";jbe/jna\n");
+            if (!handle_jumps("jbe", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case JNBE_OR_JA: {
+            // 0b01110111 [IP-INC8]
+            nob_sb_append_cstr(out, ";jnbe/ja\n");
+            if (!handle_jumps("jnbe", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case JP_OR_JPE: {
+            // 0b01111010 [IP-INC8]
+            nob_sb_append_cstr(out, ";jp/jpe\n");
+            if (!handle_jumps("jp", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case JNP_OR_JPO: {
+            // 0b01111011 [IP-INC8]
+            nob_sb_append_cstr(out, ";jnp/jpo\n");
+            if (!handle_jumps("jnp", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case JOVFLOW: {
+            // 0b01110000 [IP-INC8]
+            if (!handle_jumps("jo", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case JNOVFLOW: {
+            // 0b01110001 [IP-INC8]
+            if (!handle_jumps("jno", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case JSIGN: {
+            // 0b01111000 [IP-INC8]
+            if (!handle_jumps("js", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case JNSIGN: {
+            // 0b01111001 [IP-INC8]
+            if (!handle_jumps("jns", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case LOOP: {
+            // 0b11100010 [IP-INC8]
+            if (!handle_jumps("loop", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case JCXZ: {
+            // 0b11100011 [IP-INC8]
+            if (!handle_jumps("jcxz", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case LOOPNZ_OR_LOOPNE: {
+            // 0b11100000 [IP-INC8]
+            nob_sb_append_cstr(out, ";loopnz/loopne\n");
+            if (!handle_jumps("loopnz", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case LOOPZ_OR_LOOPE: {
+            // 0b11100001 [IP-INC8]
+            nob_sb_append_cstr(out, ";loopz/loope\n");
+            if (!handle_jumps("loopz", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case OP_KIND_COUNT: // fallthrough
         default:
-            NOB_UNREACHABLE(nob_temp_sprintf("Unhandled op_code: %.b at %s:1:%zu", op_code, asm_binary_file, i + 1));
+            NOB_UNREACHABLE(nob_temp_sprintf("Unhandled op_kind: %d at %s:1:%d", op_kind, asm_binary_file, i + 1));
             nob_return_defer(false);
         }
         i = next_i;
