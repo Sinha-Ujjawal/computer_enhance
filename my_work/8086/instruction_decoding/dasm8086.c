@@ -33,11 +33,6 @@ static const char *effective_address_lookup[8] = {
 #define disp8(insts, i) ((u8) (insts).items[(i)])
 #define disp16(insts, i) ((((u16) (u8) ((insts).items[(i) + 1])) << 8) | ((u16) (u8) ((insts).items[(i)])))
 
-typedef struct {
-    u8 pattern;
-    u8 pat_len;
-} Op_Code;
-
 typedef enum {
     MOV_REG_SLASH_MEM_TO_OR_FROM_REG,
     MOV_IMM_TO_REG,
@@ -88,6 +83,22 @@ typedef enum {
     OP_KIND_COUNT,
 } Op_Kind;
 
+typedef enum {
+    NO_CHECK,
+    CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
+    CHECK_LAST_3BITS_IN_CURR_BYTE,
+
+    OP_KIND_ADDNL_BITS_CHECK_COUNT,
+} Op_Kind_Addnl_Bits_Check;
+
+typedef struct {
+    u8                       prefix;
+    u8                       prefix_length;
+    Op_Kind                  kind;
+    Op_Kind_Addnl_Bits_Check addnl_check_kind;
+    u8                       _3bits;
+} Op_Code;
+
 static inline bool ensure_next_n_bytes(const char *asm_binary_file, Nob_String_Builder insts, u32 i, u8 n) {
     if (i >= insts.count) {
         nob_log(NOB_ERROR, "Index out of bounds (i: %d) when checking next n bytes", i);
@@ -104,239 +115,254 @@ static inline bool pattern_match_u8(u8 number, u8 pattern, u8 pat_len) {
    return (number >> (8 - pat_len)) == pattern;
 }
 
-static inline bool get_op_code(u8 byte, Op_Code *out) {
-    static const Op_Code op_codes[] = {
-        // Load and Store Instructions (MOV)
-        { 0b10001000, 6}, // MOV: Register/memory to/from register
-        { 0b10110000, 4}, // MOV: Immediate to register
-        { 0b11000110, 7}, // MOV: Immediate to register/memory
-        { 0b10100000, 7}, // MOV: Memory to accumulator
-        { 0b10100010, 7}, // MOV: Accumulator to memory
-
-        { 0b11111111, 8}, // PUSH: Register/memory
-        { 0b01010000, 5}, // PUSH: Register
-        { 0b00000000, 3}, // PUSH/POP: Segment Register
-        { 0b10001111, 8}, // POP: Register/memory
-        { 0b01011000, 5}, // POP: Register
-
-        // Arithmetic Instructions
-        { 0b00000000, 6}, // ADD: Reg/Memory with register to either
-        { 0b10000000, 6}, // ADD/SUB/CMP: Immediate to register/memory
-        { 0b00000100, 7}, // ADD: Immediate to accumulator
-        { 0b00101000, 6}, // SUB: Reg/Memory with register to either
-        { 0b00101100, 7}, // SUB: Immediate to accumulator
-        { 0b00111000, 6}, // CMP: Reg/Memory with register to either
-        { 0b00111100, 7}, // CMP: Immediate to accumulator
-
-        // Control Instructions
-        { 0b01110101, 8}, // JNE/JNZ: Jump on not equal/not zero
-        { 0b01110100, 8}, // JE/JZ: Jump on equal/zero
-        { 0b01111100, 8}, // JL/JNGE: Jump on less/not greater or equal
-        { 0b01111101, 8}, // JNL/JGE: Jump on not less/greater or equal
-        { 0b01111110, 8}, // JLE/JNG: Jump on less or equal/not greater
-        { 0b01111111, 8}, // JNLE/JG: Jump on not less or equal/greater
-        { 0b01110010, 8}, // JB/JNAE: Jump on below/not above or equal
-        { 0b01110011, 8}, // JNB/JAE: Jump on not below/above or equal
-        { 0b01110110, 8}, // JBE/JNA: Jump on below or equal/not above
-        { 0b01110111, 8}, // JNBE/JA: Jump on not below or equal/above
-        { 0b01111010, 8}, // JP/JPE: Jump on parity/parity even
-        { 0b01111011, 8}, // JNP/JPO: Jump on not par/par odd
-        { 0b01110000, 8}, // JO: Jump on overflow
-        { 0b01110001, 8}, // JNO: Jump on not overflow
-        { 0b01111000, 8}, // JS: Jump on sign
-        { 0b01111001, 8}, // JNS: Jump on not sign
-        { 0b11100010, 8}, // LOOP: Loop CX times
-        { 0b11100011, 8}, // JCXZ: Jump on CX zero
-        { 0b11100000, 8}, // LOOPNZ/LOOPNE: Loop while not zero/equal
-        { 0b11100001, 8}, // LOOPZ/LOOPE: Loop while zero/equal
-    };
-    for (u32 i = 0; i < NOB_ARRAY_LEN(op_codes); i++) {
-        Op_Code oc = op_codes[i];
-        if (pattern_match_u8(byte, oc.pattern >> (8 - oc.pat_len), oc.pat_len)) {
-            *out = oc;
-            return true;
-        }
-    }
-    return false;
-}
-
 static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder insts, u32 i, Op_Kind *op_kind) {
     if (i >= insts.count) {
         nob_log(NOB_ERROR, "Index out of bounds (i: %d) when trying to get the Op Kind from the instructions", i);
         return false;
     }
     u8 byte = (u8) insts.items[i];
-    Op_Code op_code;
-    if (!get_op_code(byte, &op_code)) {
-        nob_log(NOB_ERROR, "Could not extract op_code from first byte (%.8b) of %s:1:%d", byte, asm_binary_file, i + 1);
-        return false;
+    static const Op_Code op_codes[] = {
+        // Load and Store Instructions (MOV)
+        {
+            .prefix        = 0b100010,
+            .prefix_length = 6,
+            .kind          = MOV_REG_SLASH_MEM_TO_OR_FROM_REG,
+        }, // MOV: Register/memory to/from register
+        {
+            .prefix        = 0b1011,
+            .prefix_length = 4,
+            .kind          = MOV_IMM_TO_REG,
+        }, // MOV: Immediate to register
+        {
+            .prefix        = 0b1100011,
+            .prefix_length = 7,
+            .kind          = MOV_IMM_TO_REG_SLASH_MEM,
+        }, // MOV: Immediate to register/memory
+        {
+            .prefix        = 0b1010000,
+            .prefix_length = 7,
+            .kind          = MOV_MEMORY_TO_ACC,
+        }, // MOV: Memory to accumulator
+        {
+            .prefix        = 0b1010001,
+            .prefix_length = 7,
+            .kind          = MOV_ACC_TO_MEMORY,
+        }, // MOV: Accumulator to memory
+        {
+            .prefix           = 0b11111111,
+            .prefix_length    = 8,
+            .kind             = PUSH_REG_SLASH_MEM,
+            .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
+            ._3bits           = 0b110,
+        }, // PUSH: Register/memory
+        {
+            .prefix        = 0b01010,
+            .prefix_length = 5,
+            .kind          = PUSH_REG,
+        }, // PUSH: Register
+        {
+            .prefix           = 0b000,
+            .prefix_length    = 3,
+            .kind             = PUSH_SEG_REG,
+            .addnl_check_kind = CHECK_LAST_3BITS_IN_CURR_BYTE,
+            ._3bits           = 0b110,
+        }, // PUSH: Segment Register
+        {
+            .prefix           = 0b000,
+            .prefix_length    = 3,
+            .kind             = POP_SEG_REG,
+            .addnl_check_kind = CHECK_LAST_3BITS_IN_CURR_BYTE,
+            ._3bits           = 0b111,
+        }, // POP: Segment Register
+        {
+            .prefix        = 0b10001111,
+            .prefix_length = 8,
+            .kind          = POP_REG_SLASH_MEM,
+        }, // POP: Register/memory
+        {
+            .prefix        = 0b01011,
+            .prefix_length = 5,
+            .kind          = POP_REG,
+        }, // POP: Register
+
+        // Arithmetic Instructions
+        {
+            .prefix        = 0b000000,
+            .prefix_length = 6,
+            .kind          = ADD_REG_SLASH_MEM_WITH_REG_TO_EITHER,
+        }, // ADD: Reg/Memory with register to either
+        {
+            .prefix        = 0b0000010,
+            .prefix_length = 7,
+            .kind          = ADD_IMM_TO_ACC,
+        }, // ADD: Immediate to accumulator
+        {
+            .prefix           = 0b100000,
+            .prefix_length    = 6,
+            .kind             = ADD_IMM_TO_REG_SLASH_MEM,
+            .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
+            ._3bits           = 0b000,
+        }, // ADD: Immediate to register/memory
+        {
+            .prefix           = 0b100000,
+            .prefix_length    = 6,
+            .kind             = SUB_IMM_TO_REG_SLASH_MEM,
+            .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
+            ._3bits           = 0b101,
+        }, // SUB: Immediate to register/memory
+        {
+            .prefix           = 0b100000,
+            .prefix_length    = 6,
+            .kind             = CMP_IMM_TO_REG_SLASH_MEM,
+            .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
+            ._3bits           = 0b111,
+        }, // CMP: Immediate to register/memory
+        {
+            .prefix        = 0b001010,
+            .prefix_length = 6,
+            .kind          = SUB_REG_SLASH_MEM_WITH_REG_TO_EITHER,
+        }, // SUB: Reg/Memory with register to either
+        {
+            .prefix        = 0b0010110,
+            .prefix_length = 7,
+            .kind          = SUB_IMM_TO_ACC,
+        }, // SUB: Immediate to accumulator
+        {
+            .prefix        = 0b001110,
+            .prefix_length = 6,
+            .kind          = CMP_REG_SLASH_MEM_WITH_REG_TO_EITHER,
+        }, // CMP: Reg/Memory with register to either
+        {
+            .prefix        = 0b0011110,
+            .prefix_length = 7,
+            .kind          = CMP_IMM_TO_ACC,
+        }, // CMP: Immediate to accumulator
+        // Control Instructions
+        {
+            .prefix        = 0b01110101,
+            .prefix_length = 8,
+            .kind          = JNE_OR_JNZ,
+        }, // JNE/JNZ: Jump on not equal/not zero
+        {
+            .prefix        = 0b01110100,
+            .prefix_length = 8,
+            .kind          = JE_OR_JZ,
+        }, // JE/JZ: Jump on equal/zero
+        {
+            .prefix        = 0b01111100,
+            .prefix_length = 8,
+            .kind          = JL_OR_JNGE,
+        }, // JL/JNGE: Jump on less/not greater or equal
+        {
+            .prefix        = 0b01111101,
+            .prefix_length = 8,
+            .kind          = JNL_OR_JGE,
+        }, // JNL/JGE: Jump on not less/greater or equal
+        {
+            .prefix        = 0b01111110,
+            .prefix_length = 8,
+            .kind          = JLE_OR_JNG,
+        }, // JLE/JNG: Jump on less or equal/not greater
+        {
+            .prefix        = 0b01111111,
+            .prefix_length = 8,
+            .kind          = JNLE_OR_JG,
+        }, // JNLE/JG: Jump on not less or equal/greater
+        {
+            .prefix        = 0b01110010,
+            .prefix_length = 8,
+            .kind          = JB_OR_JNAE,
+        }, // JB/JNAE: Jump on below/not above or equal
+        {
+            .prefix        = 0b01110011,
+            .prefix_length = 8,
+            .kind          = JNB_OR_JAE,
+        }, // JNB/JAE: Jump on not below/above or equal
+        {
+            .prefix        = 0b01110110,
+            .prefix_length = 8,
+            .kind          = JBE_OR_JNA,
+        }, // JBE/JNA: Jump on below or equal/not above
+        {
+            .prefix        = 0b01110111,
+            .prefix_length = 8,
+            .kind          = JNBE_OR_JA,
+        }, // JNBE/JA: Jump on not below or equal/above
+        {
+            .prefix        = 0b01111010,
+            .prefix_length = 8,
+            .kind          = JP_OR_JPE,
+        }, // JP/JPE: Jump on parity/parity even
+        {
+            .prefix        = 0b01111011,
+            .prefix_length = 8,
+            .kind          = JNP_OR_JPO,
+        }, // JNP/JPO: Jump on not par/par odd
+        {
+            .prefix        = 0b01110000,
+            .prefix_length = 8,
+            .kind          = JOVFLOW,
+        }, // JO: Jump on overflow
+        {
+            .prefix        = 0b01110001,
+            .prefix_length = 8,
+            .kind          = JNOVFLOW,
+        }, // JNO: Jump on not overflow
+        {
+            .prefix        = 0b01111000,
+            .prefix_length = 8,
+            .kind          = JSIGN,
+        }, // JS: Jump on sign
+        {
+            .prefix        = 0b01111001,
+            .prefix_length = 8,
+            .kind          = JNSIGN,
+        }, // JNS: Jump on not sign
+        {
+            .prefix        = 0b11100010,
+            .prefix_length = 8,
+            .kind          = LOOP,
+        }, // LOOP: Loop CX times
+        {
+            .prefix        = 0b11100011,
+            .prefix_length = 8,
+            .kind          = JCXZ,
+        }, // JCXZ: Jump on CX zero
+        {
+            .prefix        = 0b11100000,
+            .prefix_length = 8,
+            .kind          = LOOPNZ_OR_LOOPNE,
+        }, // LOOPNZ/LOOPNE: Loop while not zero/equal
+        {
+            .prefix        = 0b11100001,
+            .prefix_length = 8,
+            .kind          = LOOPZ_OR_LOOPE,
+        }, // LOOPZ/LOOPE: Loop while zero/equal
+    };
+    for (u32 j = 0; j < NOB_ARRAY_LEN(op_codes); j++) {
+        Op_Code oc = op_codes[j];
+        if (!pattern_match_u8(byte, oc.prefix, oc.prefix_length)) {
+            continue;
+        }
+        if (oc.addnl_check_kind == NO_CHECK) { // NoOp
+        } else if (oc.addnl_check_kind == CHECK_MIDDLE_3BITS_IN_NEXT_BYTE) {
+            if (!ensure_next_n_bytes(asm_binary_file, insts, i, 1)) return false;
+            u8 next_byte = (u8) insts.items[i + 1];
+            if (((next_byte >> 3) & 0b111) != oc._3bits) {
+                continue;
+            }
+        } else if (oc.addnl_check_kind == CHECK_LAST_3BITS_IN_CURR_BYTE) {
+            if ((byte & 0b111) != oc._3bits) {
+                continue;
+            }
+        } else {
+            NOB_UNREACHABLE(nob_temp_sprintf("Unhandled addnl_check_kind: %d", oc.addnl_check_kind));
+            return false;
+        }
+        *op_kind = oc.kind;
+        return true;
     }
-    switch (op_code.pattern) {
-    case 0b10001000:
-        *op_kind = MOV_REG_SLASH_MEM_TO_OR_FROM_REG;
-        return true;
-    case 0b10110000:
-        *op_kind = MOV_IMM_TO_REG;
-        return true;
-    case 0b11000110:
-        *op_kind = MOV_IMM_TO_REG_SLASH_MEM;
-        return true;
-    case 0b10100000:
-        *op_kind = MOV_MEMORY_TO_ACC;
-        return true;
-    case 0b10100010:
-        *op_kind = MOV_ACC_TO_MEMORY;
-        return true;
-    case 0b11111111: {
-        // 0b11111111 [mod][xyz][r/m] [(disp-lo)] [(disp-hi)]
-        // We need to check [xyz] for op kind
-        u8 next_byte = (u8) insts.items[i + 1];
-        u8 xyz = (next_byte >> 3) & 0b111;
-        switch (xyz) {
-        case 0b110:
-            *op_kind = PUSH_REG_SLASH_MEM;
-            return true;
-        default:
-            NOB_UNREACHABLE(nob_temp_sprintf("Unhandled op_code: %.*b, and xyz: %.3b in (%.8b %.8b of form %.8b [mod][xyz][r/m]) at %s:1:%d", op_code.pat_len, op_code.pattern, xyz, byte, next_byte, byte, asm_binary_file, i + 1));
-            return false;
-        }
-        return false;
-    } break;
-    case 0b01010000:
-        *op_kind = PUSH_REG;
-        return true;
-    case 0b00000000: {
-        switch(byte & 0b111) {
-        case 0b110: // PUSH: Segment Register
-            *op_kind = PUSH_SEG_REG;
-            return true;
-        case 0b111: // POP: Segment Register
-            *op_kind = POP_SEG_REG;
-            return true;
-        default:
-            *op_kind = ADD_REG_SLASH_MEM_WITH_REG_TO_EITHER;
-            return true;
-        }
-    } break;
-    case 0b10001111: {
-        // 0b10001111 [mod][xyz][r/m] [(disp-lo)] [(disp-hi)]
-        // We need to check [xyz] for op kind
-        u8 next_byte = (u8) insts.items[i + 1];
-        u8 xyz = (next_byte >> 3) & 0b111;
-        switch (xyz) {
-        case 0b000:
-            *op_kind = POP_REG_SLASH_MEM;
-            return true;
-        default:
-            NOB_UNREACHABLE(nob_temp_sprintf("Unhandled op_code: %.*b, and xyz: %.3b in (%.8b %.8b of form %.8b [mod][xyz][r/m]) at %s:1:%d", op_code.pat_len, op_code.pattern, xyz, byte, next_byte, byte, asm_binary_file, i + 1));
-            return false;
-        }
-        return false;
-    } break;
-    case 0b01011000:
-        *op_kind = POP_REG;
-        return true;
-    case 0b00000100:
-        *op_kind = ADD_IMM_TO_ACC;
-        return true;
-    case 0b00101000:
-        *op_kind = SUB_REG_SLASH_MEM_WITH_REG_TO_EITHER;
-        return true;
-    case 0b00101100:
-        *op_kind = SUB_IMM_TO_ACC;
-        return true;
-    case 0b00111000:
-        *op_kind = CMP_REG_SLASH_MEM_WITH_REG_TO_EITHER;
-        return true;
-    case 0b00111100:
-        *op_kind = CMP_IMM_TO_ACC;
-        return true;
-    case 0b10000000: {
-        // 0b100000[s][w] [mod][xyz][r/m] [(disp-lo)] [(disp-hi)]
-        // We need to check [xyz] for op kind
-        if (!ensure_next_n_bytes(asm_binary_file, insts, i, 2)) return false;
-        u8 next_byte = (u8) insts.items[i + 1];
-        u8 xyz = (next_byte >> 3) & 0b111;
-        switch (xyz) {
-        case 0b000:
-            *op_kind = ADD_IMM_TO_REG_SLASH_MEM;
-            return true;
-        case 0b101:
-            *op_kind = SUB_IMM_TO_REG_SLASH_MEM;
-            return true;
-        case 0b111:
-            *op_kind = CMP_IMM_TO_REG_SLASH_MEM;
-            return true;
-        default:
-            NOB_UNREACHABLE(nob_temp_sprintf("Unhandled op_code: %.*b, and xyz: %.3b in (%.8b %.8b of form %.8b [mod][xyz][r/m]) at %s:1:%d", op_code.pat_len, op_code.pattern, xyz, byte, next_byte, byte, asm_binary_file, i + 1));
-            return false;
-        }
-        return false;
-    } break;
-    case 0b01110101:
-        *op_kind = JNE_OR_JNZ;
-        return true;
-    case 0b01110100:
-        *op_kind = JE_OR_JZ;
-        return true;
-    case 0b01111100:
-        *op_kind = JL_OR_JNGE;
-        return true;
-    case 0b01111101:
-        *op_kind = JNL_OR_JGE;
-        return true;
-    case 0b01111110:
-        *op_kind = JLE_OR_JNG;
-        return true;
-    case 0b01111111:
-        *op_kind = JNLE_OR_JG;
-        return true;
-    case 0b01110010:
-        *op_kind = JB_OR_JNAE;
-        return true;
-    case 0b01110011:
-        *op_kind = JNB_OR_JAE;
-        return true;
-    case 0b01110110:
-        *op_kind = JBE_OR_JNA;
-        return true;
-    case 0b01110111:
-        *op_kind = JNBE_OR_JA;
-        return true;
-    case 0b01111010:
-        *op_kind = JP_OR_JPE;
-        return true;
-    case 0b01111011:
-        *op_kind = JNP_OR_JPO;
-        return true;
-    case 0b01110000:
-        *op_kind = JOVFLOW;
-        return true;
-    case 0b01110001:
-        *op_kind = JNOVFLOW;
-        return true;
-    case 0b01111000:
-        *op_kind = JSIGN;
-        return true;
-    case 0b01111001:
-        *op_kind = JNSIGN;
-        return true;
-    case 0b11100010:
-        *op_kind = LOOP;
-        return true;
-    case 0b11100011:
-        *op_kind = JCXZ;
-        return true;
-    case 0b11100000:
-        *op_kind = LOOPNZ_OR_LOOPNE;
-        return true;
-    case 0b11100001:
-        *op_kind = LOOPZ_OR_LOOPE;
-        return true;
-    default:
-        NOB_UNREACHABLE(nob_temp_sprintf("Unhandled op_code: %.*b at %s:1:%d", op_code.pat_len, op_code.pattern, asm_binary_file, i + 1));
-        return false;
-    }
+    nob_log(NOB_ERROR, "Could not extract Operation Kind from first byte (%.8b) of %s:1:%d", byte, asm_binary_file, i + 1);
     return false;
 }
 
