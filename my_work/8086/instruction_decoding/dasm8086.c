@@ -107,6 +107,9 @@ typedef enum {
     IDIV,
     AAD,
 
+    CBW,
+    CWD,
+
     JNE_OR_JNZ,
     JE_OR_JZ,
     JL_OR_JNGE,
@@ -481,6 +484,16 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
             .addnl_check_kind = CHECK_NEXT_BYTE,
             ._byte            = 0b00001010,
         }, // ASCII adjust for divide
+        {
+            .prefix        = 0b10011000,
+            .prefix_length = 8,
+            .kind          = CBW,
+        }, // Convert Byte to Word
+        {
+            .prefix        = 0b10011001,
+            .prefix_length = 8,
+            .kind          = CWD,
+        }, // Convert Word to Double word
         {
             .prefix        = 0b01110101,
             .prefix_length = 8,
@@ -1121,6 +1134,14 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
             // TODO: Not sure how `aam` instruction uses the displacement values
             next_i += 1;
             nob_sb_append_cstr(out, "aad\n");
+        } break;
+        case CBW: {
+            // 0b10011000
+            nob_sb_append_cstr(out, "cbw\n");
+        } break;
+        case CWD: {
+            // 0b10011001
+            nob_sb_append_cstr(out, "cwd\n");
         } break;
         case JNE_OR_JNZ: {
             // 0b01110101 [IP-INC8]
