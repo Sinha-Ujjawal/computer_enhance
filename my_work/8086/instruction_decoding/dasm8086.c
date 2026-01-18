@@ -43,6 +43,7 @@ typedef enum {
     PUSH_REG_SLASH_MEM,
     PUSH_REG,
     PUSH_SEG_REG,
+
     POP_REG_SLASH_MEM,
     POP_REG,
     POP_SEG_REG,
@@ -55,6 +56,7 @@ typedef enum {
 
     OUT_TO_FIXED_PORT,
     OUT_TO_VAR_PORT,
+
     XLAT,
     LEA,
     LDS,
@@ -74,8 +76,9 @@ typedef enum {
 
     INC_REG,
     INC_REG_SLASH_MEM,
-    INC_AAA,
-    INC_DAA,
+
+    AAA,
+    DAA,
 
     SUB_REG_SLASH_MEM_WITH_REG_TO_EITHER,
     SUB_IMM_TO_REG_SLASH_MEM,
@@ -92,6 +95,9 @@ typedef enum {
     CMP_REG_SLASH_MEM_WITH_REG_TO_EITHER,
     CMP_IMM_TO_REG_SLASH_MEM,
     CMP_IMM_TO_ACC,
+
+    AAS,
+    DAS,
 
     JNE_OR_JNZ,
     JE_OR_JZ,
@@ -336,20 +342,18 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
         {
             .prefix        = 0b00110111,
             .prefix_length = 8,
-            .kind          = INC_AAA,
+            .kind          = AAA,
         }, // INC: ASCII adjust for add
         {
             .prefix        = 0b00100111,
             .prefix_length = 8,
-            .kind          = INC_DAA
+            .kind          = DAA
         }, // INC: Decimal adjust for add
         {
-            .prefix           = 0b100000,
-            .prefix_length    = 6,
-            .kind             = CMP_IMM_TO_REG_SLASH_MEM,
-            .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
-            ._3bits           = 0b111,
-        }, // CMP: Immediate to register/memory
+            .prefix        = 0b001010,
+            .prefix_length = 6,
+            .kind          = SUB_REG_SLASH_MEM_WITH_REG_TO_EITHER,
+        }, // SUB: Reg/Memory with register to either
         {
             .prefix           = 0b100000,
             .prefix_length    = 6,
@@ -358,15 +362,15 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
             ._3bits           = 0b101,
         }, // SUB: Immediate to register/memory
         {
-            .prefix        = 0b001010,
-            .prefix_length = 6,
-            .kind          = SUB_REG_SLASH_MEM_WITH_REG_TO_EITHER,
-        }, // SUB: Reg/Memory with register to either
-        {
             .prefix        = 0b0010110,
             .prefix_length = 7,
             .kind          = SUB_IMM_TO_ACC,
         }, // SUB: Immediate to accumulator
+        {
+            .prefix        = 0b000110,
+            .prefix_length = 6,
+            .kind          = SBB_REG_SLASH_MEM_WITH_REG_TO_EITHER,
+        }, // SBB: Reg/Memory with register to either
         {
             .prefix           = 0b100000,
             .prefix_length    = 6,
@@ -374,11 +378,6 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
             .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
             ._3bits           = 0b011,
         }, // SBB: Immediate to register/memory
-        {
-            .prefix        = 0b000110,
-            .prefix_length = 6,
-            .kind          = SBB_REG_SLASH_MEM_WITH_REG_TO_EITHER,
-        }, // SBB: Reg/Memory with register to either
         {
             .prefix        = 0b0001110,
             .prefix_length = 7,
@@ -409,10 +408,27 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
             .kind          = CMP_REG_SLASH_MEM_WITH_REG_TO_EITHER,
         }, // CMP: Reg/Memory with register to either
         {
+            .prefix           = 0b100000,
+            .prefix_length    = 6,
+            .kind             = CMP_IMM_TO_REG_SLASH_MEM,
+            .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
+            ._3bits           = 0b111,
+        }, // CMP: Immediate to register/memory
+        {
             .prefix        = 0b0011110,
             .prefix_length = 7,
             .kind          = CMP_IMM_TO_ACC,
         }, // CMP: Immediate to accumulator
+        {
+            .prefix        = 0b00111111,
+            .prefix_length = 8,
+            .kind          = AAS,
+        }, // CMP: ASCII adjust for subtract
+        {
+            .prefix        = 0b00101111,
+            .prefix_length = 8,
+            .kind          = DAS,
+        }, // CMP: Decimal adjust for subtract
         {
             .prefix        = 0b01110101,
             .prefix_length = 8,
@@ -951,11 +967,11 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
             // 0b1111111[w] [mod]000[r/m] [(disp-lo)] [(disp-hi)]
             if (!handle_dw_mod_reg_rm_displo_disphi("inc", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
         } break;
-        case INC_AAA: {
+        case AAA: {
             // 0b00110111
             nob_sb_append_cstr(out, "aaa\n");
         } break;
-        case INC_DAA: {
+        case DAA: {
             // 0b00100111
             nob_sb_append_cstr(out, "daa\n");
         } break;
@@ -1006,6 +1022,14 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
         case CMP_IMM_TO_ACC: {
             // 0b0011110[w] [data] [data if w = 1]
             if (!handle_arith_imm_to_acc("cmp", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case AAS: {
+            // 0b00111111
+            nob_sb_append_cstr(out, "aas\n");
+        } break;
+        case DAS: {
+            // 0b00101111
+            nob_sb_append_cstr(out, "das\n");
         } break;
         case JNE_OR_JNZ: {
             // 0b01110101 [IP-INC8]
