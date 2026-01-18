@@ -47,6 +47,12 @@ typedef enum {
     POP_REG,
     POP_SEG_REG,
 
+    XCHG_REG_SLASH_MEM_TO_OR_FROM_REG,
+    XCHG_REG_WITH_ACC,
+
+    IN_FIXED_PORT,
+    IN_VAR_PORT,
+
     ADD_REG_SLASH_MEM_WITH_REG_TO_EITHER,
     ADD_IMM_TO_REG_SLASH_MEM,
     ADD_IMM_TO_ACC,
@@ -122,7 +128,6 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
     }
     u8 byte = (u8) insts.items[i];
     static const Op_Code op_codes[] = {
-        // Load and Store Instructions (MOV)
         {
             .prefix        = 0b100010,
             .prefix_length = 6,
@@ -184,8 +189,26 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
             .prefix_length = 5,
             .kind          = POP_REG,
         }, // POP: Register
-
-        // Arithmetic Instructions
+        {
+            .prefix        = 0b1000011,
+            .prefix_length = 7,
+            .kind          = XCHG_REG_SLASH_MEM_TO_OR_FROM_REG,
+        }, // XCHG: Exchange Register/memory with register
+        {
+            .prefix        = 0b10010,
+            .prefix_length = 5,
+            .kind          = XCHG_REG_WITH_ACC,
+        }, // XCHG: Exchange Register with accumulator
+        {
+            .prefix        = 0b1110010,
+            .prefix_length = 7,
+            .kind          = IN_FIXED_PORT,
+        }, // IN: Input Form Fixed Port
+        {
+            .prefix        = 0b1110110,
+            .prefix_length = 7,
+            .kind          = IN_VAR_PORT,
+        }, // IN: Input Form Variable Port
         {
             .prefix        = 0b000000,
             .prefix_length = 6,
@@ -237,7 +260,6 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
             .prefix_length = 7,
             .kind          = CMP_IMM_TO_ACC,
         }, // CMP: Immediate to accumulator
-        // Control Instructions
         {
             .prefix        = 0b01110101,
             .prefix_length = 8,
@@ -671,6 +693,26 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
             u8 reg = (byte >> 3) & 0b11;
             nob_sb_appendf(out, "pop %s\n", segment_register_lookup(reg));
         } break;
+        case XCHG_REG_SLASH_MEM_TO_OR_FROM_REG: {
+            // 0b1000011[w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
+            if (!handle_dw_mod_reg_rm_displo_disphi("xchg", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
+        } break;
+        case XCHG_REG_WITH_ACC: {
+            // 0b10010[reg]
+            nob_sb_appendf(out, "xchg ax, %s\n", register_lookup(1, byte & 0b111));
+        } break;
+        case IN_FIXED_PORT: {
+            // 0b1110010[w] [data-8]
+            if (!ensure_next_n_bytes(asm_binary_file, insts, i, 2)) nob_return_defer(false);
+            u8 imm_val = insts.items[next_i]; next_i += 1;
+            u8 w = byte & 0b01;
+            nob_sb_appendf(out, "in %s, %d\n", register_lookup(w, 0b000), imm_val);
+        } break;
+        case IN_VAR_PORT: {
+            // 0b1110110[w]
+            u8 w = byte & 0b01;
+            nob_sb_appendf(out, "in %s, dx\n", register_lookup(w, 0b000));
+        } break;
         case ADD_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
             // 0b000000[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
             if (!handle_dw_mod_reg_rm_displo_disphi("add", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
@@ -806,6 +848,11 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
             NOB_UNREACHABLE(nob_temp_sprintf("Unhandled op_kind: %d at %s:1:%d", op_kind, asm_binary_file, i + 1));
             nob_return_defer(false);
         }
+        nob_sb_append_cstr(out, ";");
+        for (u32 j = i; j < next_i; j++) {
+            nob_sb_appendf(out, " %.8b", (u8) insts.items[j]);
+        }
+        nob_sb_append_cstr(out, "\n");
         i = next_i;
     }
 
