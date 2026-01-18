@@ -50,8 +50,19 @@ typedef enum {
     XCHG_REG_SLASH_MEM_TO_OR_FROM_REG,
     XCHG_REG_WITH_ACC,
 
-    IN_FIXED_PORT,
-    IN_VAR_PORT,
+    IN_FROM_FIXED_PORT,
+    IN_FROM_VAR_PORT,
+
+    OUT_TO_FIXED_PORT,
+    OUT_TO_VAR_PORT,
+    XLAT,
+    LEA,
+    LDS,
+    LES,
+    LAHF,
+    SAHF,
+    PUSHF,
+    POPF,
 
     ADD_REG_SLASH_MEM_WITH_REG_TO_EITHER,
     ADD_IMM_TO_REG_SLASH_MEM,
@@ -202,13 +213,63 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
         {
             .prefix        = 0b1110010,
             .prefix_length = 7,
-            .kind          = IN_FIXED_PORT,
+            .kind          = IN_FROM_FIXED_PORT,
         }, // IN: Input Form Fixed Port
         {
             .prefix        = 0b1110110,
             .prefix_length = 7,
-            .kind          = IN_VAR_PORT,
+            .kind          = IN_FROM_VAR_PORT,
         }, // IN: Input Form Variable Port
+        {
+            .prefix        = 0b1110011,
+            .prefix_length = 7,
+            .kind          = OUT_TO_FIXED_PORT,
+        }, // OUT: Out To Fixed Port
+        {
+            .prefix        = 0b1110111,
+            .prefix_length = 7,
+            .kind          = OUT_TO_VAR_PORT,
+        }, // OUT: Out To Variable Port
+        {
+            .prefix        = 0b11010111,
+            .prefix_length = 8,
+            .kind          = XLAT,
+        }, // OUT: Translate byte to AL
+        {
+            .prefix        = 0b10001101,
+            .prefix_length = 8,
+            .kind          = LEA,
+        }, // OUT: Lead EA to register
+        {
+            .prefix        = 0b11000101,
+            .prefix_length = 8,
+            .kind          = LDS,
+        }, // OUT: Lead pointer to DS
+        {
+            .prefix        = 0b11000100,
+            .prefix_length = 8,
+            .kind          = LES,
+        }, // OUT: Lead pointer to ES
+        {
+            .prefix        = 0b10011111,
+            .prefix_length = 8,
+            .kind          = LAHF,
+        }, // OUT: Load AH with flags
+        {
+            .prefix        = 0b10011110,
+            .prefix_length = 8,
+            .kind          = SAHF,
+        }, // OUT: Store AH with flags
+        {
+            .prefix        = 0b10011100,
+            .prefix_length = 8,
+            .kind          = PUSHF,
+        }, // OUT: Push flags
+        {
+            .prefix        = 0b10011101,
+            .prefix_length = 8,
+            .kind          = POPF,
+        }, // OUT: Pop flags
         {
             .prefix        = 0b000000,
             .prefix_length = 6,
@@ -701,17 +762,70 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
             // 0b10010[reg]
             nob_sb_appendf(out, "xchg ax, %s\n", register_lookup(1, byte & 0b111));
         } break;
-        case IN_FIXED_PORT: {
+        case IN_FROM_FIXED_PORT: {
             // 0b1110010[w] [data-8]
             if (!ensure_next_n_bytes(asm_binary_file, insts, i, 2)) nob_return_defer(false);
             u8 imm_val = insts.items[next_i]; next_i += 1;
             u8 w = byte & 0b01;
             nob_sb_appendf(out, "in %s, %d\n", register_lookup(w, 0b000), imm_val);
         } break;
-        case IN_VAR_PORT: {
+        case IN_FROM_VAR_PORT: {
             // 0b1110110[w]
             u8 w = byte & 0b01;
             nob_sb_appendf(out, "in %s, dx\n", register_lookup(w, 0b000));
+        } break;
+        case OUT_TO_FIXED_PORT: {
+            // 0b1110011[w] [data-8]
+            if (!ensure_next_n_bytes(asm_binary_file, insts, i, 2)) nob_return_defer(false);
+            u8 imm_val = insts.items[next_i]; next_i += 1;
+            u8 w = byte & 0b01;
+            nob_sb_appendf(out, "out %d, %s\n", imm_val, register_lookup(w, 0b000));
+        } break;
+        case OUT_TO_VAR_PORT: {
+            // 0b1110111[w]
+            u8 w = byte & 0b01;
+            nob_sb_appendf(out, "out dx, %s\n", register_lookup(w, 0b000));
+        } break;
+        case XLAT: {
+            // 0b11010111
+            nob_sb_append_cstr(out, "xlat\n");
+        } break;
+        case LEA: {
+            // 0b10001101 [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
+            u8 orig = insts.items[i];
+            insts.items[i] = orig | 0b10; // setting [d] bit
+            if (!handle_dw_mod_reg_rm_displo_disphi("lea", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
+            insts.items[i] = orig;
+        } break;
+        case LDS: {
+            // 0b11000101 [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
+            u8 orig = insts.items[i];
+            insts.items[i] = orig | 0b10; // setting [d] bit
+            if (!handle_dw_mod_reg_rm_displo_disphi("lds", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
+            insts.items[i] = orig;
+        } break;
+        case LES: {
+            // 0b11000100 [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
+            u8 orig = insts.items[i];
+            insts.items[i] = orig | 0b11; // setting [d] and [w] bits
+            if (!handle_dw_mod_reg_rm_displo_disphi("les", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
+            insts.items[i] = orig;
+        } break;
+        case LAHF: {
+            // 0b10011111
+            nob_sb_append_cstr(out, "lahf\n");
+        } break;
+        case SAHF: {
+            // 0b10011110
+            nob_sb_append_cstr(out, "sahf\n");
+        } break;
+        case PUSHF: {
+            // 0b10011100
+            nob_sb_append_cstr(out, "pushf\n");
+        } break;
+        case POPF: {
+            // 0b10011101
+            nob_sb_append_cstr(out, "popf\n");
         } break;
         case ADD_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
             // 0b000000[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
