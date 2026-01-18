@@ -1,3 +1,5 @@
+#include <string.h>
+
 #define NOB_IMPLEMENTATION
 #include "../../../nob.h"
 
@@ -147,6 +149,9 @@ typedef enum {
 
     JMP_INDIRECT_WITHIN_SEG,
     JMP_INDIRECT_INTER_SEG,
+
+    RET_WITHIN_SEG_ADDING_IMM_TO_SP,
+    RET_WITHIN_SEG,
 
     JNE_OR_JNZ,
     JE_OR_JZ,
@@ -715,6 +720,16 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
             ._3bits           = 0b101,
         }, // JMP: Indirect Intersegment
         {
+            .prefix        = 0b11000010,
+            .prefix_length = 8,
+            .kind          = RET_WITHIN_SEG_ADDING_IMM_TO_SP,
+        }, // RET (Return from CALL): Within seg adding immediate to SP
+        {
+            .prefix        = 0b11000011,
+            .prefix_length = 8,
+            .kind          = RET_WITHIN_SEG,
+        }, // RET (Return from CALL): Within segment
+        {
             .prefix        = 0b01110101,
             .prefix_length = 8,
             .kind          = JNE_OR_JNZ,
@@ -986,19 +1001,26 @@ static inline bool handle_sw_mod_rm_displo_disphi_data(const char *inst_name, co
     return true;
 }
 
-static inline bool handle_arith_imm_to_acc(const char *inst_name, const char *asm_binary_file, Nob_String_Builder insts, u32 i, u32 *next_i, Nob_String_Builder *out) {
+static inline bool handle_arith_imm_to_acc(const char *inst_name, const char *asm_binary_file, Nob_String_Builder insts, u32 i, u32 *next_i, Nob_String_Builder *out, const char *acc_reg, bool read_two_bytes) {
     // 0bOPCODE[w] [data] [data if w = 1]
     u8 byte = (u8) insts.items[i];
     u8 w = byte & 0b01;
-    if (!ensure_next_n_bytes(asm_binary_file, insts, i, 1 == w ? 3 : 2)) return false;
-    const char *acc_reg = register_lookup(w, 0b000);
+    read_two_bytes = read_two_bytes | (1 == w);
+    if (!ensure_next_n_bytes(asm_binary_file, insts, i, read_two_bytes ? 3 : 2)) return false;
+    if (acc_reg == NULL) {
+        acc_reg = register_lookup(w, 0b000);
+    }
     s16 immediate_value;
-    if (1 == w) {
+    if (read_two_bytes) {
         immediate_value = (s16) disp16(insts, *next_i); *next_i += 2;
     } else {
         immediate_value = (s16) (s8) disp8(insts, *next_i); *next_i += 1;
     }
-    nob_sb_appendf(out, "%s %s, %d\n", inst_name, acc_reg, immediate_value);
+    nob_sb_appendf(out, "%s ", inst_name);
+    if (strlen(acc_reg) > 0) {
+        nob_sb_appendf(out, "%s, ", acc_reg);
+    }
+    nob_sb_appendf(out, "%d\n", immediate_value);
     return true;
 }
 
@@ -1287,7 +1309,7 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
         } break;
         case ADD_IMM_TO_ACC: {
             // 0b0000010[w] [data] [data if w = 1]
-            if (!handle_arith_imm_to_acc("add", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+            if (!handle_arith_imm_to_acc("add", asm_binary_file, insts, i, &next_i, out, NULL, false)) nob_return_defer(false);
         } break;
         case ADC_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
             // 0b000100[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
@@ -1299,7 +1321,7 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
         } break;
         case ADC_IMM_TO_ACC: {
             // 0b0001010[w] [data] [data if w = 1]
-            if (!handle_arith_imm_to_acc("adc", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+            if (!handle_arith_imm_to_acc("adc", asm_binary_file, insts, i, &next_i, out, NULL, false)) nob_return_defer(false);
         } break;
         case INC_REG: {
             // 0b01000[reg]
@@ -1327,7 +1349,7 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
         } break;
         case SUB_IMM_TO_ACC: {
             // 0b0010110[w] [data] [data if w = 1]
-            if (!handle_arith_imm_to_acc("sub", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+            if (!handle_arith_imm_to_acc("sub", asm_binary_file, insts, i, &next_i, out, NULL, false)) nob_return_defer(false);
         } break;
         case SBB_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
             // 0b000110[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
@@ -1339,7 +1361,7 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
         } break;
         case SBB_IMM_TO_ACC: {
             // 0b0001110[w] [data] [data if w = 1]
-            if (!handle_arith_imm_to_acc("sbb", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+            if (!handle_arith_imm_to_acc("sbb", asm_binary_file, insts, i, &next_i, out, NULL, false)) nob_return_defer(false);
         } break;
         case DEC_REG: {
             // 0b01001[reg]
@@ -1363,7 +1385,7 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
         } break;
         case CMP_IMM_TO_ACC: {
             // 0b0011110[w] [data] [data if w = 1]
-            if (!handle_arith_imm_to_acc("cmp", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+            if (!handle_arith_imm_to_acc("cmp", asm_binary_file, insts, i, &next_i, out, NULL, false)) nob_return_defer(false);
         } break;
         case AAS: {
             // 0b00111111
@@ -1460,7 +1482,7 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
         } break;
         case AND_IMM_TO_ACC: {
             // 0b0010010[w] [data] [data if w = 1]
-            if (!handle_arith_imm_to_acc("and", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+            if (!handle_arith_imm_to_acc("and", asm_binary_file, insts, i, &next_i, out, NULL, false)) nob_return_defer(false);
         } break;
         case TEST_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
             // 0b100001[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
@@ -1472,7 +1494,7 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
         } break;
         case TEST_IMM_TO_ACC: {
             // 0b1010100[w] [data] [data if w = 1]
-            if (!handle_arith_imm_to_acc("test", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+            if (!handle_arith_imm_to_acc("test", asm_binary_file, insts, i, &next_i, out, NULL, false)) nob_return_defer(false);
         } break;
         case OR_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
             // 0b000010[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
@@ -1484,7 +1506,7 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
         } break;
         case OR_IMM_TO_ACC: {
             // 0b0000110[w] [data] [data if w = 1]
-            if (!handle_arith_imm_to_acc("or", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+            if (!handle_arith_imm_to_acc("or", asm_binary_file, insts, i, &next_i, out, NULL, false)) nob_return_defer(false);
         } break;
         case XOR_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
             // 0b001100[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
@@ -1496,7 +1518,7 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
         } break;
         case XOR_IMM_TO_ACC: {
             // 0b0011010[w] [data] [data if w = 1]
-            if (!handle_arith_imm_to_acc("xor", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+            if (!handle_arith_imm_to_acc("xor", asm_binary_file, insts, i, &next_i, out, NULL, false)) nob_return_defer(false);
         } break;
         case REP: {
             // 0b1111001[z]
@@ -1545,6 +1567,14 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
         case JMP_INDIRECT_INTER_SEG: {
             // 0b11111111 [mod]101[r/m] [(disp-lo)] [(disp-hi)]
             if (!handle_dw_mod_reg_rm_displo_disphi("jmp", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
+        } break;
+        case RET_WITHIN_SEG_ADDING_IMM_TO_SP: {
+            // 0b11000010 [(data-lo)] [(data-hi)]
+            if (!handle_arith_imm_to_acc("ret", asm_binary_file, insts, i, &next_i, out, "", true)) nob_return_defer(false);
+        } break;
+        case RET_WITHIN_SEG: {
+            // 0b11000011
+            nob_sb_append_cstr(out, "ret\n");
         } break;
         case JNE_OR_JNZ: {
             // 0b01110101 [IP-INC8]
