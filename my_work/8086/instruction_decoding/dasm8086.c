@@ -174,6 +174,11 @@ typedef enum {
     LOOPNZ_OR_LOOPNE,
     LOOPZ_OR_LOOPE,
 
+    INT_TYPE_SPECIFIED,
+    INT3,
+    INTO,
+    IRET,
+
     OP_KIND_COUNT,
 } Op_Kind;
 
@@ -829,6 +834,26 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
             .prefix_length = 8,
             .kind          = LOOPZ_OR_LOOPE,
         }, // LOOPZ/LOOPE: Loop while zero/equal
+        {
+            .prefix        = 0b11001101,
+            .prefix_length = 8,
+            .kind          = INT_TYPE_SPECIFIED,
+        }, // Int (Interrupt): Type Specified
+        {
+            .prefix        = 0b11001100,
+            .prefix_length = 8,
+            .kind          = INT3,
+        }, // Int (Interrupt): Type 3
+        {
+            .prefix        = 0b11001110,
+            .prefix_length = 8,
+            .kind          = INTO,
+        }, // Int (Interrupt): Interrupt on Overflow
+        {
+            .prefix        = 0b11001111,
+            .prefix_length = 8,
+            .kind          = IRET,
+        }, // Int (Interrupt): Interrupt Return
     };
     for (u32 j = 0; j < NOB_ARRAY_LEN(op_codes); j++) {
         Op_Code oc = op_codes[j];
@@ -1669,6 +1694,25 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
             // 0b11100001 [IP-INC8]
             nob_sb_append_cstr(out, ";loopz/loope\n");
             if (!handle_jumps("loopz", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case INT_TYPE_SPECIFIED: {
+            // 0b11001101 [(data-8)]
+            u8 orig = (u8) insts.items[i];
+            insts.items[i] = orig ^ 0b01;
+            if (!handle_arith_imm_to_acc("int", asm_binary_file, insts, i, &next_i, out, "", false)) nob_return_defer(false);
+            insts.items[i] = orig;
+        } break;
+        case INT3: {
+            // 0b11001100
+            nob_sb_append_cstr(out, "int3\n");
+        } break;
+        case INTO: {
+            // 0b11001110
+            nob_sb_append_cstr(out, "into\n");
+        } break;
+        case IRET: {
+            // 0b11001111
+            nob_sb_append_cstr(out, "iret\n");
         } break;
         case OP_KIND_COUNT: // fallthrough
         default:
