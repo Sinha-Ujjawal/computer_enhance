@@ -119,6 +119,10 @@ typedef enum {
     RCL,
     RCR,
 
+    AND_REG_SLASH_MEM_WITH_REG_TO_EITHER,
+    AND_IMM_TO_REG_SLASH_MEM,
+    AND_IMM_TO_ACC,
+
     JNE_OR_JNZ,
     JE_OR_JZ,
     JL_OR_JNGE,
@@ -321,11 +325,6 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
             .kind          = ADD_REG_SLASH_MEM_WITH_REG_TO_EITHER,
         }, // ADD: Reg/Memory with register to either
         {
-            .prefix        = 0b0000010,
-            .prefix_length = 7,
-            .kind          = ADD_IMM_TO_ACC,
-        }, // ADD: Immediate to accumulator
-        {
             .prefix           = 0b100000,
             .prefix_length    = 6,
             .kind             = ADD_IMM_TO_REG_SLASH_MEM,
@@ -333,15 +332,15 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
             ._3bits           = 0b000,
         }, // ADD: Immediate to register/memory
         {
+            .prefix        = 0b0000010,
+            .prefix_length = 7,
+            .kind          = ADD_IMM_TO_ACC,
+        }, // ADD: Immediate to accumulator
+        {
             .prefix        = 0b000100,
             .prefix_length = 6,
             .kind          = ADC_REG_SLASH_MEM_WITH_REG_TO_EITHER,
         }, // ADC: Reg/Memory with register to either
-        {
-            .prefix        = 0b0001010,
-            .prefix_length = 7,
-            .kind          = ADC_IMM_TO_ACC,
-        }, // ADC: Immediate to accumulator
         {
             .prefix           = 0b100000,
             .prefix_length    = 6,
@@ -349,6 +348,11 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
             .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
             ._3bits           = 0b010,
         }, // ADC: Immediate to register/memory
+        {
+            .prefix        = 0b0001010,
+            .prefix_length = 7,
+            .kind          = ADC_IMM_TO_ACC,
+        }, // ADC: Immediate to accumulator
         {
             .prefix        = 0b01000,
             .prefix_length = 5,
@@ -559,6 +563,23 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
             .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
             ._3bits           = 0b011
         }, // LOGIC: Rotate through Carry flag Right
+        {
+            .prefix        = 0b001000,
+            .prefix_length = 6,
+            .kind          = AND_REG_SLASH_MEM_WITH_REG_TO_EITHER,
+        }, // AND: Reg/Memory with register to either
+        {
+            .prefix           = 0b1000000,
+            .prefix_length    = 7,
+            .kind             = AND_IMM_TO_REG_SLASH_MEM,
+            .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
+            ._3bits           = 0b100,
+        }, // AND: Immediate to register/memory
+        {
+            .prefix        = 0b0010010,
+            .prefix_length = 7,
+            .kind          = AND_IMM_TO_ACC,
+        }, // AND: Immediate to accumulator
         {
             .prefix        = 0b01110101,
             .prefix_length = 8,
@@ -1292,6 +1313,18 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
         case RCR: {
             // 0b110100[v][w] [mod]011[r/m] [(disp-lo)] [(disp-hi)]
             if (!handle_vw_mod_reg_rm_displo_disphi("rcr", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case AND_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
+            // 0b001000[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
+            if (!handle_dw_mod_reg_rm_displo_disphi("and", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
+        } break;
+        case AND_IMM_TO_REG_SLASH_MEM: {
+            // 0b1000000[w] [mod]100[r/m] [(disp-lo)] [(disp-hi)] [data] [data if w = 1]
+            if (!handle_sw_mod_rm_displo_disphi_data("and", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
+        } break;
+        case AND_IMM_TO_ACC: {
+            // 0b0010010[w] [data] [data if w = 1]
+            if (!handle_arith_imm_to_acc("and", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
         } break;
         case JNE_OR_JNZ: {
             // 0b01110101 [IP-INC8]
