@@ -142,6 +142,12 @@ typedef enum {
     LODS,
     STOS,
 
+    CALL_INDIRECT_WITHIN_SEG,
+    CALL_INDIRECT_INTER_SEG,
+
+    JMP_INDIRECT_WITHIN_SEG,
+    JMP_INDIRECT_INTER_SEG,
+
     JNE_OR_JNZ,
     JE_OR_JZ,
     JL_OR_JNGE,
@@ -680,6 +686,34 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
             .prefix_length = 7,
             .kind          = STOS,
         }, // STOS: Store byte/wd from AL/AX
+        {
+            .prefix           = 0b11111111,
+            .prefix_length    = 8,
+            .kind             = CALL_INDIRECT_WITHIN_SEG,
+            .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
+            ._3bits           = 0b010,
+        }, // CALL: Indirect Within Segment
+        {
+            .prefix           = 0b11111111,
+            .prefix_length    = 8,
+            .kind             = CALL_INDIRECT_INTER_SEG,
+            .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
+            ._3bits           = 0b011,
+        }, // CALL: Indirect Intersegment
+        {
+            .prefix           = 0b11111111,
+            .prefix_length    = 8,
+            .kind             = JMP_INDIRECT_WITHIN_SEG,
+            .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
+            ._3bits           = 0b100,
+        }, // JMP: Indirect Within Segment
+        {
+            .prefix           = 0b11111111,
+            .prefix_length    = 8,
+            .kind             = JMP_INDIRECT_INTER_SEG,
+            .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
+            ._3bits           = 0b101,
+        }, // JMP: Indirect Intersegment
         {
             .prefix        = 0b01110101,
             .prefix_length = 8,
@@ -1495,6 +1529,22 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
             // 0b1010101[w]
             u8 w = byte & 0b01;
             nob_sb_appendf(out, "stos%c\n", (1 == w) ? 'w' : 'b');
+        } break;
+        case CALL_INDIRECT_WITHIN_SEG: {
+            // 0b11111111 [mod]010[r/m] [(disp-lo)] [(disp-hi)]
+            if (!handle_dw_mod_reg_rm_displo_disphi("call", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
+        } break;
+        case CALL_INDIRECT_INTER_SEG: {
+            // 0b11111111 [mod]011[r/m] [(disp-lo)] [(disp-hi)]
+            if (!handle_dw_mod_reg_rm_displo_disphi("call", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
+        } break;
+        case JMP_INDIRECT_WITHIN_SEG: {
+            // 0b11111111 [mod]100[r/m] [(disp-lo)] [(disp-hi)]
+            if (!handle_dw_mod_reg_rm_displo_disphi("jmp", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
+        } break;
+        case JMP_INDIRECT_INTER_SEG: {
+            // 0b11111111 [mod]101[r/m] [(disp-lo)] [(disp-hi)]
+            if (!handle_dw_mod_reg_rm_displo_disphi("jmp", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
         } break;
         case JNE_OR_JNZ: {
             // 0b01110101 [IP-INC8]
