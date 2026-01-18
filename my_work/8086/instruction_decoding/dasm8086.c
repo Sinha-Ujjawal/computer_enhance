@@ -179,6 +179,18 @@ typedef enum {
     INTO,
     IRET,
 
+    CLC,
+    CMC,
+    STC,
+    CLD,
+    STD,
+    CLI,
+    STI,
+    HLT,
+    WAIT,
+    LOCK,
+    SEG_OVERIDE_PREFIX,
+
     OP_KIND_COUNT,
 } Op_Kind;
 
@@ -854,6 +866,63 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
             .prefix_length = 8,
             .kind          = IRET,
         }, // Int (Interrupt): Interrupt Return
+        {
+            .prefix        = 0b11111000,
+            .prefix_length = 8,
+            .kind          = CLC,
+        }, // Processor Control: Clear Carry
+        {
+            .prefix        = 0b11110101,
+            .prefix_length = 8,
+            .kind          = CMC,
+        }, // Processor Control: Complement Carry
+        {
+            .prefix        = 0b11111001,
+            .prefix_length = 8,
+            .kind          = STC,
+        }, // Processor Control: Set Carry
+        {
+            .prefix        = 0b11111100,
+            .prefix_length = 8,
+            .kind          = CLD,
+        }, // Processor Control: Clear Direction
+        {
+            .prefix        = 0b11111101,
+            .prefix_length = 8,
+            .kind          = STD,
+        }, // Processor Control: Set Direction
+        {
+            .prefix        = 0b11111010,
+            .prefix_length = 8,
+            .kind          = CLI,
+        }, // Processor Control: Clear Interrupt
+        {
+            .prefix        = 0b11111011,
+            .prefix_length = 8,
+            .kind          = STI,
+        }, // Processor Control: Set Interrupt
+        {
+            .prefix        = 0b11110100,
+            .prefix_length = 8,
+            .kind          = HLT,
+        }, // Processor Control: Halt
+        {
+            .prefix        = 0b10011011,
+            .prefix_length = 8,
+            .kind          = WAIT,
+        }, // Processor Control: Wait
+        {
+            .prefix        = 0b11110000,
+            .prefix_length = 8,
+            .kind          = LOCK,
+        }, // Processor Control: Bus lock prefix
+        {
+            .prefix           = 0b001,
+            .prefix_length    = 3,
+            .kind             = SEG_OVERIDE_PREFIX,
+            .addnl_check_kind = CHECK_LAST_3BITS_IN_CURR_BYTE,
+            ._3bits           = 0b110,
+        }, // Processor Control: Segment Override Prefix
     };
     for (u32 j = 0; j < NOB_ARRAY_LEN(op_codes); j++) {
         Op_Code oc = op_codes[j];
@@ -1713,6 +1782,51 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
         case IRET: {
             // 0b11001111
             nob_sb_append_cstr(out, "iret\n");
+        } break;
+        case CLC: {
+            // 0b11111000
+            nob_sb_append_cstr(out, "clc\n");
+        } break;
+        case CMC: {
+            // 0b11110101
+            nob_sb_append_cstr(out, "cmc\n");
+        } break;
+        case STC: {
+            // 0b11111001
+            nob_sb_append_cstr(out, "stc\n");
+        } break;
+        case CLD: {
+            // 0b11111100
+            nob_sb_append_cstr(out, "cld\n");
+        } break;
+        case STD: {
+            // 0b11111101
+            nob_sb_append_cstr(out, "std\n");
+        } break;
+        case CLI: {
+            // 0b11111010
+            nob_sb_append_cstr(out, "cli\n");
+        } break;
+        case STI: {
+            // 0b11111011
+            nob_sb_append_cstr(out, "sti\n");
+        } break;
+        case HLT: {
+            // 0b11110100
+            nob_sb_append_cstr(out, "hlt\n");
+        } break;
+        case WAIT: {
+            // 0b10011011
+            nob_sb_append_cstr(out, "wait\n");
+        } break;
+        case LOCK: {
+            // 0b11110000
+            nob_sb_append_cstr(out, "lock\n");
+        } break;
+        case SEG_OVERIDE_PREFIX: {
+            // 0b001[reg]110
+            // We can directly use the `db` for emitting the same bytes
+            nob_sb_appendf(out, "db 0b%.8b\n", byte);
         } break;
         case OP_KIND_COUNT: // fallthrough
         default:
