@@ -103,6 +103,10 @@ typedef enum {
     IMUL,
     AAM,
 
+    DIV,
+    IDIV,
+    AAD,
+
     JNE_OR_JNZ,
     JE_OR_JZ,
     JL_OR_JNGE,
@@ -456,6 +460,27 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
             .addnl_check_kind = CHECK_NEXT_BYTE,
             ._byte            = 0b00001010,
         }, // ASCII adjust for multiply
+        {
+            .prefix           = 0b1111011,
+            .prefix_length    = 7,
+            .kind             = DIV,
+            .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
+            ._3bits           = 0b110,
+        }, // DIV: Divide (unsigned)
+        {
+            .prefix           = 0b1111011,
+            .prefix_length    = 7,
+            .kind             = IDIV,
+            .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
+            ._3bits           = 0b111,
+        }, // IDIV: Integer Divide (signed)
+        {
+            .prefix           = 0b11010101,
+            .prefix_length    = 8,
+            .kind             = AAD,
+            .addnl_check_kind = CHECK_NEXT_BYTE,
+            ._byte            = 0b00001010,
+        }, // ASCII adjust for divide
         {
             .prefix        = 0b01110101,
             .prefix_length = 8,
@@ -1076,7 +1101,26 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
         case AAM: {
             // 0b11010100 0b00001010 [(disp-lo)] [(disp-hi)]
             // TODO: Not sure how `aam` instruction uses the displacement values
+            next_i += 1;
             nob_sb_append_cstr(out, "aam\n");
+        } break;
+        case DIV: {
+            // 0b1111011[w] [mod]110[r/m] [(disp-lo)] [(disp-hi)]
+            if (!ensure_next_n_bytes(asm_binary_file, insts, i, 2)) nob_return_defer(false);
+            u8 orig = insts.items[i + 1];
+            insts.items[i + 1] = orig ^ 0b00100000;
+            if (!handle_dw_mod_reg_rm_displo_disphi("div", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
+            insts.items[i + 1] = orig;
+        } break;
+        case IDIV: {
+            // 0b1111011[w] [mod]111[r/m] [(disp-lo)] [(disp-hi)]
+            if (!handle_dw_mod_reg_rm_displo_disphi("idiv", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
+        } break;
+        case AAD: {
+            // 0b11010101 0b00001010 [(disp-lo)] [(disp-hi)]
+            // TODO: Not sure how `aam` instruction uses the displacement values
+            next_i += 1;
+            nob_sb_append_cstr(out, "aad\n");
         } break;
         case JNE_OR_JNZ: {
             // 0b01110101 [IP-INC8]
