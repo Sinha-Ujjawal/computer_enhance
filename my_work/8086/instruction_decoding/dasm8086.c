@@ -99,6 +99,9 @@ typedef enum {
     AAS,
     DAS,
 
+    MUL,
+    IMUL,
+
     JNE_OR_JNZ,
     JE_OR_JZ,
     JL_OR_JNGE,
@@ -343,12 +346,12 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
             .prefix        = 0b00110111,
             .prefix_length = 8,
             .kind          = AAA,
-        }, // INC: ASCII adjust for add
+        }, // ASCII adjust for add
         {
             .prefix        = 0b00100111,
             .prefix_length = 8,
             .kind          = DAA
-        }, // INC: Decimal adjust for add
+        }, // Decimal adjust for add
         {
             .prefix        = 0b001010,
             .prefix_length = 6,
@@ -423,12 +426,26 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
             .prefix        = 0b00111111,
             .prefix_length = 8,
             .kind          = AAS,
-        }, // CMP: ASCII adjust for subtract
+        }, // ASCII adjust for subtract
         {
             .prefix        = 0b00101111,
             .prefix_length = 8,
             .kind          = DAS,
-        }, // CMP: Decimal adjust for subtract
+        }, // Decimal adjust for subtract
+        {
+            .prefix           = 0b1111011,
+            .prefix_length    = 7,
+            .kind             = MUL,
+            .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
+            ._3bits           = 0b100,
+        }, // MUL: Multiply (unsigned)
+        {
+            .prefix           = 0b1111011,
+            .prefix_length    = 7,
+            .kind             = IMUL,
+            .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
+            ._3bits           = 0b101,
+        }, // IMUL: Integer Multiply (signed)
         {
             .prefix        = 0b01110101,
             .prefix_length = 8,
@@ -559,12 +576,6 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
 
 static inline bool handle_dw_mod_reg_rm_displo_disphi(const char *inst_name, const char *asm_binary_file, Nob_String_Builder insts, u32 i, u32 *next_i, Nob_String_Builder *out, bool print_dst) {
     // 0bOPCODE[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
-    //
-    // Note that d only makes sense in case of mod != 0b11. Meaning
-    // the assembler needs to encode
-    // store, [inst_name] [] reg, d = 0
-    // load,  [inst_name] reg [], d = 1
-    //
     if (!ensure_next_n_bytes(asm_binary_file, insts, i, 1)) return false;
     u8 byte = (u8) insts.items[i];
     u8 next_byte = (u8) insts.items[*next_i]; *next_i += 1;
@@ -572,6 +583,7 @@ static inline bool handle_dw_mod_reg_rm_displo_disphi(const char *inst_name, con
     u8 reg = (next_byte >> 3) & 0b111;
     u8 rm  = (next_byte >> 0) & 0b111;
     u8 w = byte & 0b01;
+    u8 d = (byte >> 1) & 0b01;
     if (0b11 == mode) {
         // mode = 0b11
         const char *src = register_lookup(w, reg);
@@ -579,11 +591,13 @@ static inline bool handle_dw_mod_reg_rm_displo_disphi(const char *inst_name, con
         if (print_dst) {
             nob_sb_appendf(out, "%s %s, %s\n", inst_name, dst, src);
         } else {
-            nob_sb_appendf(out, "%s %s\n", inst_name, src);
+            if (1 == (d)) {
+                nob_sb_appendf(out, "%s %s\n", inst_name, dst);
+            } else {
+                nob_sb_appendf(out, "%s %s\n", inst_name, src);
+            }
         }
     } else {
-        u8 d = (byte >> 1) & 0b01;
-
         #define gen_inst_directional(inst_name, out, d, w, expr1, arg1, expr2, arg2, print_dst) do { \
             if (1 == (d)) { \
                 if (print_dst) { \
@@ -595,7 +609,7 @@ static inline bool handle_dw_mod_reg_rm_displo_disphi(const char *inst_name, con
                 if (print_dst) { \
                     nob_sb_appendf((out), "%s " expr2 ", " expr1 "\n", (inst_name), (arg2), (arg1)); \
                 } else { \
-                    nob_sb_appendf((out), "%s %s" expr1 "\n", (inst_name), 1 == (w) ? "word" : "byte", (arg1)); \
+                    nob_sb_appendf((out), "%s %s " expr1 "\n", (inst_name), 1 == (w) ? "word" : "byte", (arg1)); \
                 } \
             } \
         } while(0)
@@ -1030,6 +1044,18 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
         case DAS: {
             // 0b00101111
             nob_sb_append_cstr(out, "das\n");
+        } break;
+        case MUL: {
+            // 0b1111011[w] [mod]100[r/m] [(disp-lo)] [(disp-hi)]
+            if (!ensure_next_n_bytes(asm_binary_file, insts, i, 2)) nob_return_defer(false);
+            u8 orig = insts.items[i + 1];
+            insts.items[i + 1] = orig ^ 0b00100000;
+            if (!handle_dw_mod_reg_rm_displo_disphi("mul", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
+            insts.items[i + 1] = orig;
+        } break;
+        case IMUL: {
+            // 0b1111011[w] [mod]101[r/m] [(disp-lo)] [(disp-hi)]
+            if (!handle_dw_mod_reg_rm_displo_disphi("imul", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
         } break;
         case JNE_OR_JNZ: {
             // 0b01110101 [IP-INC8]
