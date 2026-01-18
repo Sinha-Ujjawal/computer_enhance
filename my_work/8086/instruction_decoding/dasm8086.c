@@ -101,6 +101,7 @@ typedef enum {
 
     MUL,
     IMUL,
+    AAM,
 
     JNE_OR_JNZ,
     JE_OR_JZ,
@@ -130,6 +131,7 @@ typedef enum {
     NO_CHECK,
     CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
     CHECK_LAST_3BITS_IN_CURR_BYTE,
+    CHECK_NEXT_BYTE,
 
     OP_KIND_ADDNL_BITS_CHECK_COUNT,
 } Op_Kind_Addnl_Bits_Check;
@@ -140,6 +142,7 @@ typedef struct {
     Op_Kind                  kind;
     Op_Kind_Addnl_Bits_Check addnl_check_kind;
     u8                       _3bits;
+    u8                       _byte;
 } Op_Code;
 
 static inline bool ensure_next_n_bytes(const char *asm_binary_file, Nob_String_Builder insts, u32 i, u8 n) {
@@ -447,6 +450,13 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
             ._3bits           = 0b101,
         }, // IMUL: Integer Multiply (signed)
         {
+            .prefix           = 0b11010100,
+            .prefix_length    = 8,
+            .kind             = AAM,
+            .addnl_check_kind = CHECK_NEXT_BYTE,
+            ._byte            = 0b00001010,
+        }, // ASCII adjust for multiply
+        {
             .prefix        = 0b01110101,
             .prefix_length = 8,
             .kind          = JNE_OR_JNZ,
@@ -557,6 +567,12 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
             if (!ensure_next_n_bytes(asm_binary_file, insts, i, 1)) return false;
             u8 next_byte = (u8) insts.items[i + 1];
             if (((next_byte >> 3) & 0b111) != oc._3bits) {
+                continue;
+            }
+        } else if (oc.addnl_check_kind == CHECK_NEXT_BYTE) {
+            if (!ensure_next_n_bytes(asm_binary_file, insts, i, 1)) return false;
+            u8 next_byte = (u8) insts.items[i + 1];
+            if (next_byte != oc._byte) {
                 continue;
             }
         } else if (oc.addnl_check_kind == CHECK_LAST_3BITS_IN_CURR_BYTE) {
@@ -1056,6 +1072,11 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
         case IMUL: {
             // 0b1111011[w] [mod]101[r/m] [(disp-lo)] [(disp-hi)]
             if (!handle_dw_mod_reg_rm_displo_disphi("imul", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
+        } break;
+        case AAM: {
+            // 0b11010100 0b00001010 [(disp-lo)] [(disp-hi)]
+            // TODO: Not sure how `aam` instruction uses the displacement values
+            nob_sb_append_cstr(out, "aam\n");
         } break;
         case JNE_OR_JNZ: {
             // 0b01110101 [IP-INC8]
