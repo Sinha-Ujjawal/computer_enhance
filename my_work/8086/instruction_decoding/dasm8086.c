@@ -81,6 +81,14 @@ typedef enum {
     SUB_IMM_TO_REG_SLASH_MEM,
     SUB_IMM_TO_ACC,
 
+    SBB_REG_SLASH_MEM_WITH_REG_TO_EITHER,
+    SBB_IMM_TO_REG_SLASH_MEM,
+    SBB_IMM_TO_ACC,
+
+    DEC_REG,
+    DEC_REG_SLASH_MEM,
+    NEG,
+
     CMP_REG_SLASH_MEM_WITH_REG_TO_EITHER,
     CMP_IMM_TO_REG_SLASH_MEM,
     CMP_IMM_TO_ACC,
@@ -319,9 +327,11 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
             .kind          = INC_REG,
         }, // INC: Increment register
         {
-            .prefix        = 0b1111111,
-            .prefix_length = 7,
-            .kind          = INC_REG_SLASH_MEM,
+            .prefix           = 0b1111111,
+            .prefix_length    = 7,
+            .kind             = INC_REG_SLASH_MEM,
+            .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
+            ._3bits           = 0b000,
         }, // INC: Increment register/memory
         {
             .prefix        = 0b00110111,
@@ -336,17 +346,17 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
         {
             .prefix           = 0b100000,
             .prefix_length    = 6,
-            .kind             = SUB_IMM_TO_REG_SLASH_MEM,
-            .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
-            ._3bits           = 0b101,
-        }, // SUB: Immediate to register/memory
-        {
-            .prefix           = 0b100000,
-            .prefix_length    = 6,
             .kind             = CMP_IMM_TO_REG_SLASH_MEM,
             .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
             ._3bits           = 0b111,
         }, // CMP: Immediate to register/memory
+        {
+            .prefix           = 0b100000,
+            .prefix_length    = 6,
+            .kind             = SUB_IMM_TO_REG_SLASH_MEM,
+            .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
+            ._3bits           = 0b101,
+        }, // SUB: Immediate to register/memory
         {
             .prefix        = 0b001010,
             .prefix_length = 6,
@@ -357,6 +367,42 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
             .prefix_length = 7,
             .kind          = SUB_IMM_TO_ACC,
         }, // SUB: Immediate to accumulator
+        {
+            .prefix           = 0b100000,
+            .prefix_length    = 6,
+            .kind             = SBB_IMM_TO_REG_SLASH_MEM,
+            .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
+            ._3bits           = 0b011,
+        }, // SBB: Immediate to register/memory
+        {
+            .prefix        = 0b000110,
+            .prefix_length = 6,
+            .kind          = SBB_REG_SLASH_MEM_WITH_REG_TO_EITHER,
+        }, // SBB: Reg/Memory with register to either
+        {
+            .prefix        = 0b0001110,
+            .prefix_length = 7,
+            .kind          = SBB_IMM_TO_ACC,
+        }, // SBB: Immediate to accumulator
+        {
+            .prefix        = 0b01001,
+            .prefix_length = 5,
+            .kind          = DEC_REG,
+        }, // DEC: Decrement register
+        {
+            .prefix           = 0b1111111,
+            .prefix_length    = 7,
+            .kind             = DEC_REG_SLASH_MEM,
+            .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
+            ._3bits           = 0b001,
+        }, // DEC: Decrement register/memory
+        {
+            .prefix           = 0b1111011,
+            .prefix_length    = 7,
+            .kind             = NEG,
+            .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
+            ._3bits           = 0b011,
+        }, // DEC: Change sign
         {
             .prefix        = 0b001110,
             .prefix_length = 6,
@@ -924,6 +970,30 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
         case SUB_IMM_TO_ACC: {
             // 0b0010110[w] [data] [data if w = 1]
             if (!handle_arith_imm_to_acc("sub", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case SBB_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
+            // 0b000110[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
+            if (!handle_dw_mod_reg_rm_displo_disphi("sbb", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
+        } break;
+        case SBB_IMM_TO_REG_SLASH_MEM: {
+            // 0b100000[s][w] [mod]011[r/m] [(disp-lo)] [(disp-hi)] [data] [data if w = 1]
+            if (!handle_sw_mod_rm_displo_disphi_data("sbb", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
+        } break;
+        case SBB_IMM_TO_ACC: {
+            // 0b0001110[w] [data] [data if w = 1]
+            if (!handle_arith_imm_to_acc("sbb", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case DEC_REG: {
+            // 0b01001[reg]
+            nob_sb_appendf(out, "dec %s\n", register_lookup(1, byte & 0b111));
+        } break;
+        case DEC_REG_SLASH_MEM: {
+            // 0b1111111[w] [mod]001[r/m] [(disp-lo)] [(disp-hi)]
+            if (!handle_dw_mod_reg_rm_displo_disphi("dec", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
+        } break;
+        case NEG: {
+            // 0b1111011[w] [mod]011[r/m] [(disp-lo)] [(disp-hi)]
+            if (!handle_dw_mod_reg_rm_displo_disphi("neg", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
         } break;
         case CMP_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
             // 0b001110[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
