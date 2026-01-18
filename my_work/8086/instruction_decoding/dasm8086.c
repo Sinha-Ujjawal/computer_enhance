@@ -110,6 +110,15 @@ typedef enum {
     CBW,
     CWD,
 
+    NOT,
+    SHL_OR_SAL,
+    SHR,
+    SAR,
+    ROL,
+    ROR,
+    RCL,
+    RCR,
+
     JNE_OR_JNZ,
     JE_OR_JZ,
     JL_OR_JNGE,
@@ -495,6 +504,62 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
             .kind          = CWD,
         }, // Convert Word to Double word
         {
+            .prefix           = 0b1111011,
+            .prefix_length    = 7,
+            .kind             = NOT,
+            .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
+            ._3bits           = 0b010,
+        }, // LOGIC: Invert
+        {
+            .prefix           = 0b110100,
+            .prefix_length    = 6,
+            .kind             = SHL_OR_SAL,
+            .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
+            ._3bits           = 0b100,
+        }, // LOGIC: Shift Logical/Arithmetic Left
+        {
+            .prefix           = 0b110100,
+            .prefix_length    = 6,
+            .kind             = SHR,
+            .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
+            ._3bits           = 0b101,
+        }, // LOGIC: Shift Logical Right
+        {
+            .prefix           = 0b110100,
+            .prefix_length    = 6,
+            .kind             = SAR,
+            .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
+            ._3bits           = 0b111,
+        }, // LOGIC: Shift Arithmetic Right
+        {
+            .prefix           = 0b110100,
+            .prefix_length    = 6,
+            .kind             = ROL,
+            .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
+            ._3bits           = 0b000,
+        }, // LOGIC: Rotate Left
+        {
+            .prefix           = 0b110100,
+            .prefix_length    = 6,
+            .kind             = ROR,
+            .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
+            ._3bits           = 0b001
+        }, // LOGIC: Rotate Right
+        {
+            .prefix           = 0b110100,
+            .prefix_length    = 6,
+            .kind             = RCL,
+            .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
+            ._3bits           = 0b010,
+        }, // LOGIC: Rotate through Carry flag Left
+        {
+            .prefix           = 0b110100,
+            .prefix_length    = 6,
+            .kind             = RCR,
+            .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
+            ._3bits           = 0b011
+        }, // LOGIC: Rotate through Carry flag Right
+        {
             .prefix        = 0b01110101,
             .prefix_length = 8,
             .kind          = JNE_OR_JNZ,
@@ -787,6 +852,58 @@ static inline bool handle_jumps(const char *inst_name, const char *asm_binary_fi
     if (!ensure_next_n_bytes(asm_binary_file, insts, i, 2)) return false;
     s16 ip_inc8 = (s16) (s8) insts.items[i + 1]; *next_i += 1;
     nob_sb_appendf(out, "%s ($+2)+%d\n", inst_name, ip_inc8);
+    return true;
+}
+
+static inline bool handle_vw_mod_reg_rm_displo_disphi(const char *inst_name, const char *asm_binary_file, Nob_String_Builder insts, u32 i, u32 *next_i, Nob_String_Builder *out) {
+    // 0bOPCODE[v][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
+    // v: 0 Shift/rotate count is one
+    //    1 Shift/rotate count is in CL register
+    if (!ensure_next_n_bytes(asm_binary_file, insts, i, 1)) return false;
+    u8 byte = (u8) insts.items[i];
+    u8 next_byte = (u8) insts.items[*next_i]; *next_i += 1;
+    u8 mode = next_byte >> 6;
+    u8 reg = (next_byte >> 3) & 0b111;
+    (void) reg;
+    u8 rm  = (next_byte >> 0) & 0b111;
+    u8 w = byte & 0b01;
+    u8 v = (byte >> 1) & 0b01;
+    if (0b11 == mode) {
+        // mode = 0b11
+        const char *dst = register_lookup(w, rm);
+        nob_sb_appendf(out, "%s %s", inst_name, dst);
+    } else {
+        #define gen_shift_inst(inst_name, out, v, w, expr, arg) do { \
+            nob_sb_appendf((out), "%s %s " expr, (inst_name), 1 == (w) ? "word" : "byte", (arg)); \
+        } while(0)
+
+        const char *partial_effective_expr = effective_address_lookup[rm];
+        if (0b00 == mode) {
+            if (0b110 == rm) { // Direct Address
+                if (!ensure_next_n_bytes(asm_binary_file, insts, i, 3)) return false;
+                s16 direct_addr = (s16) disp16(insts, *next_i); *next_i += 2;
+                gen_shift_inst(inst_name, out, v, w, "[%d]", direct_addr);
+            } else {
+                gen_shift_inst(inst_name, out, v, w, "[%s]", partial_effective_expr);
+            }
+        } else { // 0b01 and 0b10
+            if (!ensure_next_n_bytes(asm_binary_file, insts, i, (0b10 == mode) ? 3 : 2)) return false;
+            s16 off;
+            if (0b10 == mode) {
+                off = (s16) disp16(insts, *next_i); *next_i += 2;
+            } else {
+                off = (s16) (s8) disp8(insts, *next_i); *next_i += 1;
+            }
+            if (0 == off) {
+                gen_shift_inst(inst_name, out, v, w, "[%s]", partial_effective_expr);
+            } else {
+                u32 mark = nob_temp_save();
+                gen_shift_inst(inst_name, out, v, w, "[%s]", nob_temp_sprintf("%s%s%d", partial_effective_expr, off < 0 ? " - " : " + ", off * (off < 0 ? -1 : 1)));
+                nob_temp_rewind(mark);
+            }
+        }
+    }
+    nob_sb_appendf(out, ", %s\n", (0b0 == v) ? "1" : "cl");
     return true;
 }
 
@@ -1142,6 +1259,39 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
         case CWD: {
             // 0b10011001
             nob_sb_append_cstr(out, "cwd\n");
+        } break;
+        case NOT: {
+            // 0b11110110[w] [mod]010[r/m] [(disp-lo)] [(disp-hi)]
+            if (!handle_dw_mod_reg_rm_displo_disphi("not", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
+        } break;
+        case SHL_OR_SAL: {
+            // 0b110100[v][w] [mod]100[r/m] [(disp-lo)] [(disp-hi)]
+            nob_sb_append_cstr(out, ";shl/sal\n");
+            if (!handle_vw_mod_reg_rm_displo_disphi("shl", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case SHR: {
+            // 0b110100[v][w] [mod]101[r/m] [(disp-lo)] [(disp-hi)]
+            if (!handle_vw_mod_reg_rm_displo_disphi("shr", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case SAR: {
+            // 0b110100[v][w] [mod]111[r/m] [(disp-lo)] [(disp-hi)]
+            if (!handle_vw_mod_reg_rm_displo_disphi("sar", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case ROL: {
+            // 0b110100[v][w] [mod]000[r/m] [(disp-lo)] [(disp-hi)]
+            if (!handle_vw_mod_reg_rm_displo_disphi("rol", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case ROR: {
+            // 0b110100[v][w] [mod]001[r/m] [(disp-lo)] [(disp-hi)]
+            if (!handle_vw_mod_reg_rm_displo_disphi("ror", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case RCL: {
+            // 0b110100[v][w] [mod]010[r/m] [(disp-lo)] [(disp-hi)]
+            if (!handle_vw_mod_reg_rm_displo_disphi("rcl", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case RCR: {
+            // 0b110100[v][w] [mod]011[r/m] [(disp-lo)] [(disp-hi)]
+            if (!handle_vw_mod_reg_rm_displo_disphi("rcr", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
         } break;
         case JNE_OR_JNZ: {
             // 0b01110101 [IP-INC8]
