@@ -135,6 +135,13 @@ typedef enum {
     XOR_IMM_TO_REG_SLASH_MEM,
     XOR_IMM_TO_ACC,
 
+    REP,
+    MOVS,
+    CMPS,
+    SCAS,
+    LODS,
+    STOS,
+
     JNE_OR_JNZ,
     JE_OR_JZ,
     JL_OR_JNGE,
@@ -643,6 +650,36 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
             .prefix_length = 7,
             .kind          = XOR_IMM_TO_ACC,
         }, // XOR: Immediate to accumulator
+        {
+            .prefix        = 0b1111001,
+            .prefix_length = 7,
+            .kind          = REP,
+        }, // REP: Repeat
+        {
+            .prefix        = 0b1010010,
+            .prefix_length = 7,
+            .kind          = MOVS,
+        }, // MOVS: Move byte/word
+        {
+            .prefix        = 0b1010011,
+            .prefix_length = 7,
+            .kind          = CMPS,
+        }, // CMPS: Compare byte/word
+        {
+            .prefix        = 0b1010111,
+            .prefix_length = 7,
+            .kind          = SCAS,
+        }, // SCAS: Scan byte/word
+        {
+            .prefix        = 0b1010110,
+            .prefix_length = 7,
+            .kind          = LODS,
+        }, // LODS: Load byte/wd to AL/AX
+        {
+            .prefix        = 0b1010101,
+            .prefix_length = 7,
+            .kind          = STOS,
+        }, // STOS: Store byte/wd from AL/AX
         {
             .prefix        = 0b01110101,
             .prefix_length = 8,
@@ -1426,6 +1463,38 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
         case XOR_IMM_TO_ACC: {
             // 0b0011010[w] [data] [data if w = 1]
             if (!handle_arith_imm_to_acc("xor", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case REP: {
+            // 0b1111001[z]
+            // z: 0 Repeat/loop while zero flag is clear
+            //    1 Repeat/loop while zero flag is set
+            // TODO: Not sure how to use the z bit
+            nob_sb_append_cstr(out, "rep\n");
+        } break;
+        case MOVS: {
+            // 0b1010010[w]
+            u8 w = byte & 0b01;
+            nob_sb_appendf(out, "movs%c\n", (1 == w) ? 'w' : 'b');
+        } break;
+        case CMPS: {
+            // 0b1010011[w]
+            u8 w = byte & 0b01;
+            nob_sb_appendf(out, "cmps%c\n", (1 == w) ? 'w' : 'b');
+        } break;
+        case SCAS: {
+            // 0b1010111[w]
+            u8 w = byte & 0b01;
+            nob_sb_appendf(out, "scas%c\n", (1 == w) ? 'w' : 'b');
+        } break;
+        case LODS: {
+            // 0b1010110[w]
+            u8 w = byte & 0b01;
+            nob_sb_appendf(out, "lods%c\n", (1 == w) ? 'w' : 'b');
+        } break;
+        case STOS: {
+            // 0b1010101[w]
+            u8 w = byte & 0b01;
+            nob_sb_appendf(out, "stos%c\n", (1 == w) ? 'w' : 'b');
         } break;
         case JNE_OR_JNZ: {
             // 0b01110101 [IP-INC8]
