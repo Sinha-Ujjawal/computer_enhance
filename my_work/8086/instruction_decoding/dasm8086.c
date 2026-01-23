@@ -123,6 +123,18 @@ typedef enum {
     AND_IMM_TO_REG_SLASH_MEM,
     AND_IMM_TO_ACC,
 
+    TEST_REG_SLASH_MEM_WITH_REG_TO_EITHER,
+    TEST_IMM_TO_REG_SLASH_MEM,
+    TEST_IMM_TO_ACC,
+
+    OR_REG_SLASH_MEM_WITH_REG_TO_EITHER,
+    OR_IMM_TO_REG_SLASH_MEM,
+    OR_IMM_TO_ACC,
+
+    XOR_REG_SLASH_MEM_WITH_REG_TO_EITHER,
+    XOR_IMM_TO_REG_SLASH_MEM,
+    XOR_IMM_TO_ACC,
+
     JNE_OR_JNZ,
     JE_OR_JZ,
     JL_OR_JNGE,
@@ -581,6 +593,57 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
             .kind          = AND_IMM_TO_ACC,
         }, // AND: Immediate to accumulator
         {
+            .prefix        = 0b100001,
+            .prefix_length = 6,
+            .kind          = TEST_REG_SLASH_MEM_WITH_REG_TO_EITHER,
+        }, // TEST: Reg/Memory with register to either
+        {
+            .prefix           = 0b1111011,
+            .prefix_length    = 7,
+            .kind             = TEST_IMM_TO_REG_SLASH_MEM,
+            .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
+            ._3bits           = 0b000,
+        }, // TEST: Immediate to register/memory
+        {
+            .prefix        = 0b1010100,
+            .prefix_length = 7,
+            .kind          = TEST_IMM_TO_ACC,
+        }, // TEST: Immediate to accumulator
+        {
+            .prefix        = 0b000010,
+            .prefix_length = 6,
+            .kind          = OR_REG_SLASH_MEM_WITH_REG_TO_EITHER,
+        }, // OR: Reg/Memory with register to either
+        {
+            .prefix           = 0b1000000,
+            .prefix_length    = 7,
+            .kind             = OR_IMM_TO_REG_SLASH_MEM,
+            .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
+            ._3bits           = 0b001,
+        }, // OR: Immediate to register/memory
+        {
+            .prefix        = 0b0000110,
+            .prefix_length = 7,
+            .kind          = OR_IMM_TO_ACC,
+        }, // OR: Immediate to accumulator
+        {
+            .prefix        = 0b001100,
+            .prefix_length = 6,
+            .kind          = XOR_REG_SLASH_MEM_WITH_REG_TO_EITHER,
+        }, // XOR: Reg/Memory with register to either
+        {
+            .prefix           = 0b1000000,
+            .prefix_length    = 7,
+            .kind             = XOR_IMM_TO_REG_SLASH_MEM,
+            .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
+            ._3bits           = 0b110,
+        }, // XOR: Immediate to register/memory
+        {
+            .prefix        = 0b0011010,
+            .prefix_length = 7,
+            .kind          = XOR_IMM_TO_ACC,
+        }, // XOR: Immediate to accumulator
+        {
             .prefix        = 0b01110101,
             .prefix_length = 8,
             .kind          = JNE_OR_JNZ,
@@ -933,8 +996,10 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
     Nob_String_Builder insts = {0};
     if (!nob_read_entire_file(asm_binary_file, &insts)) nob_return_defer(false);
     nob_sb_appendf(out, "; Decoded assembly for %s\nbits 16\n", asm_binary_file);
+    size_t prev = out->count;
     for (u32 i = 0; i < insts.count;) {
-        printf("%.*s\n", (int) out->count, out->items);
+        printf("%.*s", (int) (out->count - prev), out->items + prev);
+        prev = out->count;
         u8 byte = (u8) insts.items[i];
         u32 next_i = i + 1;
         Op_Kind op_kind;
@@ -1325,6 +1390,42 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
         case AND_IMM_TO_ACC: {
             // 0b0010010[w] [data] [data if w = 1]
             if (!handle_arith_imm_to_acc("and", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case TEST_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
+            // 0b100001[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
+            if (!handle_dw_mod_reg_rm_displo_disphi("test", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
+        } break;
+        case TEST_IMM_TO_REG_SLASH_MEM: {
+            // 0b1111011[w] [mod]000[r/m] [(disp-lo)] [(disp-hi)] [data] [data if w = 1]
+            if (!handle_sw_mod_rm_displo_disphi_data("test", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
+        } break;
+        case TEST_IMM_TO_ACC: {
+            // 0b1010100[w] [data] [data if w = 1]
+            if (!handle_arith_imm_to_acc("test", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case OR_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
+            // 0b000010[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
+            if (!handle_dw_mod_reg_rm_displo_disphi("or", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
+        } break;
+        case OR_IMM_TO_REG_SLASH_MEM: {
+            // 0b1000000[w] [mod]001[r/m] [(disp-lo)] [(disp-hi)] [data] [data if w = 1]
+            if (!handle_sw_mod_rm_displo_disphi_data("or", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
+        } break;
+        case OR_IMM_TO_ACC: {
+            // 0b0000110[w] [data] [data if w = 1]
+            if (!handle_arith_imm_to_acc("or", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
+        } break;
+        case XOR_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
+            // 0b001100[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
+            if (!handle_dw_mod_reg_rm_displo_disphi("xor", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
+        } break;
+        case XOR_IMM_TO_REG_SLASH_MEM: {
+            // 0b0000110[w] [mod]110[r/m] [(disp-lo)] [(disp-hi)] [data] [data if w = 1]
+            if (!handle_sw_mod_rm_displo_disphi_data("xor", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
+        } break;
+        case XOR_IMM_TO_ACC: {
+            // 0b0011010[w] [data] [data if w = 1]
+            if (!handle_arith_imm_to_acc("xor", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
         } break;
         case JNE_OR_JNZ: {
             // 0b01110101 [IP-INC8]
