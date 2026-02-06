@@ -146,9 +146,11 @@ typedef enum {
 
     CALL_INDIRECT_WITHIN_SEG,
     CALL_INDIRECT_INTER_SEG,
+    CALL_DIRECT_INTER_SEG,
 
     JMP_INDIRECT_WITHIN_SEG,
     JMP_INDIRECT_INTER_SEG,
+    JMP_DIRECT_INTER_SEG,
 
     RET_WITHIN_SEG_ADDING_IMM_TO_SP,
     RET_WITHIN_SEG,
@@ -723,6 +725,11 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
             ._3bits           = 0b011,
         }, // CALL: Indirect Intersegment
         {
+            .prefix        = 0b10011010,
+            .prefix_length = 8,
+            .kind          = CALL_DIRECT_INTER_SEG,
+        }, // CALL: Direct Intersegment
+        {
             .prefix           = 0b11111111,
             .prefix_length    = 8,
             .kind             = JMP_INDIRECT_WITHIN_SEG,
@@ -736,6 +743,11 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
             .addnl_check_kind = CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
             ._3bits           = 0b101,
         }, // JMP: Indirect Intersegment
+        {
+            .prefix           = 0b11101010,
+            .prefix_length    = 8,
+            .kind             = JMP_DIRECT_INTER_SEG,
+        }, // JMP: Direct Intersegment
         {
             .prefix        = 0b11000010,
             .prefix_length = 8,
@@ -1654,6 +1666,14 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
             // 0b11111111 [mod]011[r/m] [(disp-lo)] [(disp-hi)]
             if (!handle_dw_mod_reg_rm_displo_disphi("call", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
         } break;
+        case CALL_DIRECT_INTER_SEG: {
+            // 0b10011010 [ip-lo] [ip-hi] [cs-lo] [cs-hi]
+            u8 ip_low_byte  = (u8) insts.items[next_i++];
+            u8 ip_high_byte = (u8) insts.items[next_i++];
+            u8 cs_low_byte  = (u8) insts.items[next_i++];
+            u8 cs_high_byte = (u8) insts.items[next_i++];
+            nob_sb_appendf(out, "call %d:%d\n", (cs_high_byte << 8) | cs_low_byte, (ip_high_byte << 8) | ip_low_byte);
+        } break;
         case JMP_INDIRECT_WITHIN_SEG: {
             // 0b11111111 [mod]100[r/m] [(disp-lo)] [(disp-hi)]
             if (!handle_dw_mod_reg_rm_displo_disphi("jmp", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
@@ -1661,6 +1681,14 @@ bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
         case JMP_INDIRECT_INTER_SEG: {
             // 0b11111111 [mod]101[r/m] [(disp-lo)] [(disp-hi)]
             if (!handle_dw_mod_reg_rm_displo_disphi("jmp", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
+        } break;
+        case JMP_DIRECT_INTER_SEG: {
+            // 0b11101010 [ip-lo] [ip-hi] [cs-lo] [cs-hi]
+            u8 ip_low_byte  = (u8) insts.items[next_i++];
+            u8 ip_high_byte = (u8) insts.items[next_i++];
+            u8 cs_low_byte  = (u8) insts.items[next_i++];
+            u8 cs_high_byte = (u8) insts.items[next_i++];
+            nob_sb_appendf(out, "jmp %d:%d\n", (cs_high_byte << 8) | cs_low_byte, (ip_high_byte << 8) | ip_low_byte);
         } break;
         case RET_WITHIN_SEG_ADDING_IMM_TO_SP: {
             // 0b11000010 [(data-lo)] [(data-hi)]
