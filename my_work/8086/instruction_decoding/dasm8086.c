@@ -198,24 +198,6 @@ typedef enum {
     OP_KIND_COUNT,
 } Op_Kind;
 
-typedef enum {
-    NO_CHECK,
-    CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
-    CHECK_LAST_3BITS_IN_CURR_BYTE,
-    CHECK_NEXT_BYTE,
-
-    OP_KIND_ADDNL_BITS_CHECK_COUNT,
-} Op_Kind_Addnl_Bits_Check;
-
-typedef struct {
-    u8                       prefix;
-    u8                       prefix_length;
-    Op_Kind                  kind;
-    Op_Kind_Addnl_Bits_Check addnl_check_kind;
-    u8                       _3bits;
-    u8                       _byte;
-} Op_Code;
-
 static inline bool ensure_next_n_bytes(const char *asm_binary_file, Nob_String_Builder insts, u32 i, u8 n) {
     if (i >= insts.count) {
         nob_log(NOB_ERROR, "Index out of bounds (i: %d) when checking next n bytes", i);
@@ -238,7 +220,23 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
         return false;
     }
     u8 byte = (u8) insts.items[i];
-    static const Op_Code op_codes[] = {
+    typedef enum {
+        NO_CHECK,
+        CHECK_MIDDLE_3BITS_IN_NEXT_BYTE,
+        CHECK_LAST_3BITS_IN_CURR_BYTE,
+        CHECK_NEXT_BYTE,
+
+        OP_KIND_ADDNL_BITS_CHECK_COUNT,
+    } Op_Kind_Addnl_Bits_Check;
+    typedef struct {
+        u8                       prefix;
+        u8                       prefix_length;
+        Op_Kind                  kind;
+        Op_Kind_Addnl_Bits_Check addnl_check_kind;
+        u8                       _3bits;
+        u8                       _byte;
+    } Op_Pattern;
+    static const Op_Pattern op_patterns[] = {
         {
             .prefix        = 0b100010,
             .prefix_length = 6,
@@ -938,33 +936,34 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
             ._3bits           = 0b110,
         }, // Processor Control: Segment Override Prefix
     };
-    for (u32 j = 0; j < NOB_ARRAY_LEN(op_codes); j++) {
-        Op_Code oc = op_codes[j];
-        if (!pattern_match_u8(byte, oc.prefix, oc.prefix_length)) {
+    NOB_ASSERT((NOB_ARRAY_LEN(op_patterns) == OP_KIND_COUNT) && "Unexpected Error, it is expected that `op_patterns` have one-to-one correspondence with the `Op_Kind`(s)");
+    for (u32 j = 0; j < NOB_ARRAY_LEN(op_patterns); j++) {
+        Op_Pattern op = op_patterns[j];
+        if (!pattern_match_u8(byte, op.prefix, op.prefix_length)) {
             continue;
         }
-        if (oc.addnl_check_kind == NO_CHECK) { // NoOp
-        } else if (oc.addnl_check_kind == CHECK_MIDDLE_3BITS_IN_NEXT_BYTE) {
+        if (op.addnl_check_kind == NO_CHECK) { // NoOp
+        } else if (op.addnl_check_kind == CHECK_MIDDLE_3BITS_IN_NEXT_BYTE) {
             if (!ensure_next_n_bytes(asm_binary_file, insts, i, 1)) return false;
             u8 next_byte = (u8) insts.items[i + 1];
-            if (((next_byte >> 3) & 0b111) != oc._3bits) {
+            if (((next_byte >> 3) & 0b111) != op._3bits) {
                 continue;
             }
-        } else if (oc.addnl_check_kind == CHECK_NEXT_BYTE) {
+        } else if (op.addnl_check_kind == CHECK_NEXT_BYTE) {
             if (!ensure_next_n_bytes(asm_binary_file, insts, i, 1)) return false;
             u8 next_byte = (u8) insts.items[i + 1];
-            if (next_byte != oc._byte) {
+            if (next_byte != op._byte) {
                 continue;
             }
-        } else if (oc.addnl_check_kind == CHECK_LAST_3BITS_IN_CURR_BYTE) {
-            if ((byte & 0b111) != oc._3bits) {
+        } else if (op.addnl_check_kind == CHECK_LAST_3BITS_IN_CURR_BYTE) {
+            if ((byte & 0b111) != op._3bits) {
                 continue;
             }
         } else {
-            NOB_UNREACHABLE(nob_temp_sprintf("Unhandled addnl_check_kind: %d", oc.addnl_check_kind));
+            NOB_UNREACHABLE(nob_temp_sprintf("Unhandled addnl_check_kind: %d", op.addnl_check_kind));
             return false;
         }
-        *op_kind = oc.kind;
+        *op_kind = op.kind;
         return true;
     }
     nob_log(NOB_ERROR, "Could not extract Operation Kind from first byte (%.8b) of %s:1:%d", byte, asm_binary_file, i + 1);
