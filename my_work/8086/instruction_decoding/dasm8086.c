@@ -6,9 +6,11 @@
 typedef uint8_t  u8;
 typedef uint16_t u16;
 typedef uint32_t u32;
+typedef uint64_t u64;
 typedef int8_t   s8;
 typedef int16_t  s16;
 typedef int32_t  s32;
+typedef int64_t  s64;
 
 static const char *register_lookup[16] = {
     "al", "cl", "dl", "bl",
@@ -1190,683 +1192,693 @@ static inline bool handle_vw_mod_reg_rm_displo_disphi(const char *inst_name, con
     return true;
 }
 
+s64 decode_one(const char *asm_binary_file, Nob_String_Builder insts, u32 i, Nob_String_Builder *out) {
+    s64 result = -1;
+    u8 byte = (u8) insts.items[i];
+    u32 next_i = i + 1;
+    Op_Kind op_kind;
+    if (!get_op_kind(asm_binary_file, insts, i, &op_kind)) {
+        nob_return_defer(-1);
+    }
+    // d 0 - Instruction source is specified in <reg> field
+    // d 1 - Instruction destination is specified in <reg> field
+    //
+    // w 0 - Instructions operate on byte data
+    // w 1 - Instructions operate on word data
+    //
+    // mod 00 - Memory mode, no displacement follows (exception is when r/m is 110, i.e.; Direct Address)
+    // mod 01 - Memory mode, 8-bit displacement follows
+    // mod 10 - Memory mode, 16-bit displacement follows
+    // mod 11 - Register mode, no displacement follows
+    //
+    // w reg
+    // 0 000 al
+    // 0 001 cl
+    // 0 010 dl
+    // 0 011 bl
+    // 0 100 ah
+    // 0 101 ch
+    // 0 110 dh
+    // 0 111 bh
+    // 1 000 ax
+    // 1 001 cx
+    // 1 010 dx
+    // 1 011 bx
+    // 1 100 sp
+    // 1 101 bp
+    // 1 110 si
+    // 1 111 di
+    //
+    // When mod 11
+    //   r/m is register lookup
+    // Otherwise, combination of mod and r/m is called "Effective Address Calculation"
+    //   mod r/m
+    //   00  000 bx+si
+    //   00  001 bx+di
+    //   00  010 bp+si
+    //   00  011 bp+di
+    //   00  100 si
+    //   00  101 di
+    //   00  110 DIRECT ADDRESS (16 bits displacement)
+    //   00  111 bx
+    //
+    //   01  000 bx+si+d8 (8 bits displacement)
+    //   01  001 bx+di+d8 (8 bits displacement)
+    //   01  010 bp+si+d8 (8 bits displacement)
+    //   01  011 bp+di+d8 (8 bits displacement)
+    //   01  100 si+d8    (8 bits displacement)
+    //   01  101 di+d8    (8 bits displacement)
+    //   01  110 bp+d8    (8 bits displacement)
+    //   01  111 bx+d8    (8 bits displacement)
+    //
+    //   11  000 bx+si+d16 (16 bits displacement)
+    //   11  001 bx+di+d16 (16 bits displacement)
+    //   11  010 bp+si+d16 (16 bits displacement)
+    //   11  011 bp+di+d16 (16 bits displacement)
+    //   11  100 si+d16    (16 bits displacement)
+    //   11  101 di+d16    (16 bits displacement)
+    //   11  110 bp+d16    (16 bits displacement)
+    //   11  111 bx+d16    (16 bits displacement)
+    switch(op_kind) {
+    case MOV_REG_SLASH_MEM_TO_OR_FROM_REG: {
+        // 0b100010[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
+        if (!handle_dw_mod_reg_rm_displo_disphi("mov", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(-1);
+    } break;
+    case MOV_IMM_TO_REG: {
+        // 0b1011[w][reg] [data] [data if w = 1]
+        u8 w = (byte >> 3) & 0b01;
+        const char *reg = NOB_ARRAY_GET(register_lookup, (byte & 0b1111));
+        if (!ensure_next_n_bytes(asm_binary_file, insts, i, (1 == w) ? 2 : 1)) nob_return_defer(-1);
+        s16 immediate_value;
+        if (1 == w) {
+            immediate_value = (s16) disp16(insts, next_i); next_i += 2;
+        } else {
+            immediate_value = (s16) (s8) disp8(insts, next_i); next_i += 1;
+        }
+        nob_sb_appendf(out, "mov %s, %d\n", reg, immediate_value);
+    } break;
+    case MOV_IMM_TO_REG_SLASH_MEM: {
+        // 0b1100011[w] [mod]000[r/m] [(disp-lo)] [(disp-hi)] [data] [data if w = 1]
+        if (!handle_sw_mod_rm_displo_disphi_data("mov", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(-1);
+    } break;
+    case MOV_MEMORY_TO_ACC: {
+        // 0b1010000[w] [addr-lo] [addr-hi]
+        if (!ensure_next_n_bytes(asm_binary_file, insts, i, 2)) nob_return_defer(-1);
+        s16 direct_addr = (s16) disp16(insts, next_i); next_i += 2;
+        u8 w = byte & 0b01;
+        const char *acc_reg = register_lookup(w, 0b000);
+        nob_sb_appendf(out, "mov %s, [%d]\n", acc_reg, direct_addr);
+    } break;
+    case MOV_ACC_TO_MEMORY: {
+        // 0b1010001[w] [addr-lo] [addr-hi]
+        if (!ensure_next_n_bytes(asm_binary_file, insts, i, 2)) nob_return_defer(-1);
+        s16 direct_addr = (s16) disp16(insts, next_i); next_i += 2;
+        u8 w = byte & 0b01;
+        const char *acc_reg = register_lookup(w, 0b000);
+        nob_sb_appendf(out, "mov [%d], %s\n", direct_addr, acc_reg);
+    } break;
+    case PUSH_REG_SLASH_MEM: {
+        // 0b11111111 [mod]110[r/m] [(disp-lo)] [(disp-hi)]
+        if (!handle_dw_mod_reg_rm_displo_disphi("push", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(-1);
+    } break;
+    case PUSH_REG: {
+        // 0b01010[reg]
+        u8 reg = byte & 0b111;
+        nob_sb_appendf(out, "push %s\n", register_lookup(1, reg));
+    } break;
+    case PUSH_SEG_REG: {
+        // 0b000[reg]110
+        // Note that reg is a segment register encoded as 2-bits
+        u8 reg = (byte >> 3) & 0b11;
+        nob_sb_appendf(out, "push %s\n", segment_register_lookup(reg));
+    } break;
+    case POP_REG_SLASH_MEM: {
+        // 0b10001111 [mod]110[r/m] [(disp-lo)] [(disp-hi)]
+        if (!handle_dw_mod_reg_rm_displo_disphi("pop", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(-1);
+    } break;
+    case POP_REG: {
+        // 0b01011[reg]
+        u8 reg = byte & 0b111;
+        nob_sb_appendf(out, "pop %s\n", register_lookup(1, reg));
+    } break;
+    case POP_SEG_REG: {
+        // 0b000[reg]111
+        // Note that reg is a segment register encoded as 2-bits
+        u8 reg = (byte >> 3) & 0b11;
+        nob_sb_appendf(out, "pop %s\n", segment_register_lookup(reg));
+    } break;
+    case XCHG_REG_SLASH_MEM_TO_OR_FROM_REG: {
+        // 0b1000011[w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
+        if (!handle_dw_mod_reg_rm_displo_disphi("xchg", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(-1);
+    } break;
+    case XCHG_REG_WITH_ACC: {
+        // 0b10010[reg]
+        nob_sb_appendf(out, "xchg ax, %s\n", register_lookup(1, byte & 0b111));
+    } break;
+    case IN_FROM_FIXED_PORT: {
+        // 0b1110010[w] [data-8]
+        if (!ensure_next_n_bytes(asm_binary_file, insts, i, 2)) nob_return_defer(-1);
+        u8 imm_val = insts.items[next_i]; next_i += 1;
+        u8 w = byte & 0b01;
+        nob_sb_appendf(out, "in %s, %d\n", register_lookup(w, 0b000), imm_val);
+    } break;
+    case IN_FROM_VAR_PORT: {
+        // 0b1110110[w]
+        u8 w = byte & 0b01;
+        nob_sb_appendf(out, "in %s, dx\n", register_lookup(w, 0b000));
+    } break;
+    case OUT_TO_FIXED_PORT: {
+        // 0b1110011[w] [data-8]
+        if (!ensure_next_n_bytes(asm_binary_file, insts, i, 2)) nob_return_defer(-1);
+        u8 imm_val = insts.items[next_i]; next_i += 1;
+        u8 w = byte & 0b01;
+        nob_sb_appendf(out, "out %d, %s\n", imm_val, register_lookup(w, 0b000));
+    } break;
+    case OUT_TO_VAR_PORT: {
+        // 0b1110111[w]
+        u8 w = byte & 0b01;
+        nob_sb_appendf(out, "out dx, %s\n", register_lookup(w, 0b000));
+    } break;
+    case XLAT: {
+        // 0b11010111
+        nob_sb_append_cstr(out, "xlat\n");
+    } break;
+    case LEA: {
+        // 0b10001101 [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
+        u8 orig = insts.items[i];
+        insts.items[i] = orig | 0b10; // setting [d] bit
+        if (!handle_dw_mod_reg_rm_displo_disphi("lea", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(-1);
+        insts.items[i] = orig;
+    } break;
+    case LDS: {
+        // 0b11000101 [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
+        u8 orig = insts.items[i];
+        insts.items[i] = orig | 0b10; // setting [d] bit
+        if (!handle_dw_mod_reg_rm_displo_disphi("lds", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(-1);
+        insts.items[i] = orig;
+    } break;
+    case LES: {
+        // 0b11000100 [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
+        u8 orig = insts.items[i];
+        insts.items[i] = orig | 0b11; // setting [d] and [w] bits
+        if (!handle_dw_mod_reg_rm_displo_disphi("les", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(-1);
+        insts.items[i] = orig;
+    } break;
+    case LAHF: {
+        // 0b10011111
+        nob_sb_append_cstr(out, "lahf\n");
+    } break;
+    case SAHF: {
+        // 0b10011110
+        nob_sb_append_cstr(out, "sahf\n");
+    } break;
+    case PUSHF: {
+        // 0b10011100
+        nob_sb_append_cstr(out, "pushf\n");
+    } break;
+    case POPF: {
+        // 0b10011101
+        nob_sb_append_cstr(out, "popf\n");
+    } break;
+    case ADD_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
+        // 0b000000[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
+        if (!handle_dw_mod_reg_rm_displo_disphi("add", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(-1);
+    } break;
+    case ADD_IMM_TO_REG_SLASH_MEM: {
+        // 0b100000[s][w] [mod]000[r/m] [(disp-lo)] [(disp-hi)] [data] [data if w = 1]
+        if (!handle_sw_mod_rm_displo_disphi_data("add", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(-1);
+    } break;
+    case ADD_IMM_TO_ACC: {
+        // 0b0000010[w] [data] [data if w = 1]
+        if (!handle_arith_imm_to_acc("add", asm_binary_file, insts, i, &next_i, out, NULL, false)) nob_return_defer(-1);
+    } break;
+    case ADC_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
+        // 0b000100[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
+        if (!handle_dw_mod_reg_rm_displo_disphi("adc", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(-1);
+    } break;
+    case ADC_IMM_TO_REG_SLASH_MEM: {
+        // 0b100000[s][w] [mod]010[r/m] [(disp-lo)] [(disp-hi)] [data] [data if w = 1]
+        if (!handle_sw_mod_rm_displo_disphi_data("adc", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(-1);
+    } break;
+    case ADC_IMM_TO_ACC: {
+        // 0b0001010[w] [data] [data if w = 1]
+        if (!handle_arith_imm_to_acc("adc", asm_binary_file, insts, i, &next_i, out, NULL, false)) nob_return_defer(-1);
+    } break;
+    case INC_REG: {
+        // 0b01000[reg]
+        nob_sb_appendf(out, "inc %s\n", register_lookup(1, byte & 0b111));
+    } break;
+    case INC_REG_SLASH_MEM: {
+        // 0b1111111[w] [mod]000[r/m] [(disp-lo)] [(disp-hi)]
+        if (!handle_dw_mod_reg_rm_displo_disphi("inc", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(-1);
+    } break;
+    case AAA: {
+        // 0b00110111
+        nob_sb_append_cstr(out, "aaa\n");
+    } break;
+    case DAA: {
+        // 0b00100111
+        nob_sb_append_cstr(out, "daa\n");
+    } break;
+    case SUB_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
+        // 0b001010[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
+        if (!handle_dw_mod_reg_rm_displo_disphi("sub", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(-1);
+    } break;
+    case SUB_IMM_TO_REG_SLASH_MEM: {
+        // 0b100000[s][w] [mod]101[r/m] [(disp-lo)] [(disp-hi)] [data] [data if w = 1]
+        if (!handle_sw_mod_rm_displo_disphi_data("sub", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(-1);
+    } break;
+    case SUB_IMM_TO_ACC: {
+        // 0b0010110[w] [data] [data if w = 1]
+        if (!handle_arith_imm_to_acc("sub", asm_binary_file, insts, i, &next_i, out, NULL, false)) nob_return_defer(-1);
+    } break;
+    case SBB_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
+        // 0b000110[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
+        if (!handle_dw_mod_reg_rm_displo_disphi("sbb", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(-1);
+    } break;
+    case SBB_IMM_TO_REG_SLASH_MEM: {
+        // 0b100000[s][w] [mod]011[r/m] [(disp-lo)] [(disp-hi)] [data] [data if w = 1]
+        if (!handle_sw_mod_rm_displo_disphi_data("sbb", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(-1);
+    } break;
+    case SBB_IMM_TO_ACC: {
+        // 0b0001110[w] [data] [data if w = 1]
+        if (!handle_arith_imm_to_acc("sbb", asm_binary_file, insts, i, &next_i, out, NULL, false)) nob_return_defer(-1);
+    } break;
+    case DEC_REG: {
+        // 0b01001[reg]
+        nob_sb_appendf(out, "dec %s\n", register_lookup(1, byte & 0b111));
+    } break;
+    case DEC_REG_SLASH_MEM: {
+        // 0b1111111[w] [mod]001[r/m] [(disp-lo)] [(disp-hi)]
+        if (!handle_dw_mod_reg_rm_displo_disphi("dec", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(-1);
+    } break;
+    case NEG: {
+        // 0b1111011[w] [mod]011[r/m] [(disp-lo)] [(disp-hi)]
+        if (!handle_dw_mod_reg_rm_displo_disphi("neg", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(-1);
+    } break;
+    case CMP_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
+        // 0b001110[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
+        if (!handle_dw_mod_reg_rm_displo_disphi("cmp", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(-1);
+    } break;
+    case CMP_IMM_TO_REG_SLASH_MEM: {
+        // 0b100000[s][w] [mod]111[r/m] [(disp-lo)] [(disp-hi)] [data] [data if w = 1]
+        if (!handle_sw_mod_rm_displo_disphi_data("cmp", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(-1);
+    } break;
+    case CMP_IMM_TO_ACC: {
+        // 0b0011110[w] [data] [data if w = 1]
+        if (!handle_arith_imm_to_acc("cmp", asm_binary_file, insts, i, &next_i, out, NULL, false)) nob_return_defer(-1);
+    } break;
+    case AAS: {
+        // 0b00111111
+        nob_sb_append_cstr(out, "aas\n");
+    } break;
+    case DAS: {
+        // 0b00101111
+        nob_sb_append_cstr(out, "das\n");
+    } break;
+    case MUL: {
+        // 0b1111011[w] [mod]100[r/m] [(disp-lo)] [(disp-hi)]
+        if (!ensure_next_n_bytes(asm_binary_file, insts, i, 2)) nob_return_defer(-1);
+        u8 orig = insts.items[i + 1];
+        insts.items[i + 1] = orig ^ 0b00100000;
+        if (!handle_dw_mod_reg_rm_displo_disphi("mul", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(-1);
+        insts.items[i + 1] = orig;
+    } break;
+    case IMUL: {
+        // 0b1111011[w] [mod]101[r/m] [(disp-lo)] [(disp-hi)]
+        if (!handle_dw_mod_reg_rm_displo_disphi("imul", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(-1);
+    } break;
+    case AAM: {
+        // 0b11010100 0b00001010 [(disp-lo)] [(disp-hi)]
+        // TODO: Not sure how `aam` instruction uses the displacement values
+        next_i += 1;
+        nob_sb_append_cstr(out, "aam\n");
+    } break;
+    case DIV: {
+        // 0b1111011[w] [mod]110[r/m] [(disp-lo)] [(disp-hi)]
+        if (!ensure_next_n_bytes(asm_binary_file, insts, i, 2)) nob_return_defer(-1);
+        u8 orig = insts.items[i + 1];
+        insts.items[i + 1] = orig ^ 0b00100000;
+        if (!handle_dw_mod_reg_rm_displo_disphi("div", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(-1);
+        insts.items[i + 1] = orig;
+    } break;
+    case IDIV: {
+        // 0b1111011[w] [mod]111[r/m] [(disp-lo)] [(disp-hi)]
+        if (!handle_dw_mod_reg_rm_displo_disphi("idiv", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(-1);
+    } break;
+    case AAD: {
+        // 0b11010101 0b00001010 [(disp-lo)] [(disp-hi)]
+        // TODO: Not sure how `aam` instruction uses the displacement values
+        next_i += 1;
+        nob_sb_append_cstr(out, "aad\n");
+    } break;
+    case CBW: {
+        // 0b10011000
+        nob_sb_append_cstr(out, "cbw\n");
+    } break;
+    case CWD: {
+        // 0b10011001
+        nob_sb_append_cstr(out, "cwd\n");
+    } break;
+    case NOT: {
+        // 0b11110110[w] [mod]010[r/m] [(disp-lo)] [(disp-hi)]
+        if (!handle_dw_mod_reg_rm_displo_disphi("not", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(-1);
+    } break;
+    case SHL_OR_SAL: {
+        // 0b110100[v][w] [mod]100[r/m] [(disp-lo)] [(disp-hi)]
+        nob_sb_append_cstr(out, ";shl/sal\n");
+        if (!handle_vw_mod_reg_rm_displo_disphi("shl", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(-1);
+    } break;
+    case SHR: {
+        // 0b110100[v][w] [mod]101[r/m] [(disp-lo)] [(disp-hi)]
+        if (!handle_vw_mod_reg_rm_displo_disphi("shr", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(-1);
+    } break;
+    case SAR: {
+        // 0b110100[v][w] [mod]111[r/m] [(disp-lo)] [(disp-hi)]
+        if (!handle_vw_mod_reg_rm_displo_disphi("sar", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(-1);
+    } break;
+    case ROL: {
+        // 0b110100[v][w] [mod]000[r/m] [(disp-lo)] [(disp-hi)]
+        if (!handle_vw_mod_reg_rm_displo_disphi("rol", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(-1);
+    } break;
+    case ROR: {
+        // 0b110100[v][w] [mod]001[r/m] [(disp-lo)] [(disp-hi)]
+        if (!handle_vw_mod_reg_rm_displo_disphi("ror", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(-1);
+    } break;
+    case RCL: {
+        // 0b110100[v][w] [mod]010[r/m] [(disp-lo)] [(disp-hi)]
+        if (!handle_vw_mod_reg_rm_displo_disphi("rcl", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(-1);
+    } break;
+    case RCR: {
+        // 0b110100[v][w] [mod]011[r/m] [(disp-lo)] [(disp-hi)]
+        if (!handle_vw_mod_reg_rm_displo_disphi("rcr", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(-1);
+    } break;
+    case AND_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
+        // 0b001000[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
+        if (!handle_dw_mod_reg_rm_displo_disphi("and", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(-1);
+    } break;
+    case AND_IMM_TO_REG_SLASH_MEM: {
+        // 0b1000000[w] [mod]100[r/m] [(disp-lo)] [(disp-hi)] [data] [data if w = 1]
+        if (!handle_sw_mod_rm_displo_disphi_data("and", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(-1);
+    } break;
+    case AND_IMM_TO_ACC: {
+        // 0b0010010[w] [data] [data if w = 1]
+        if (!handle_arith_imm_to_acc("and", asm_binary_file, insts, i, &next_i, out, NULL, false)) nob_return_defer(-1);
+    } break;
+    case TEST_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
+        // 0b100001[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
+        if (!handle_dw_mod_reg_rm_displo_disphi("test", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(-1);
+    } break;
+    case TEST_IMM_TO_REG_SLASH_MEM: {
+        // 0b1111011[w] [mod]000[r/m] [(disp-lo)] [(disp-hi)] [data] [data if w = 1]
+        if (!handle_sw_mod_rm_displo_disphi_data("test", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(-1);
+    } break;
+    case TEST_IMM_TO_ACC: {
+        // 0b1010100[w] [data] [data if w = 1]
+        if (!handle_arith_imm_to_acc("test", asm_binary_file, insts, i, &next_i, out, NULL, false)) nob_return_defer(-1);
+    } break;
+    case OR_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
+        // 0b000010[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
+        if (!handle_dw_mod_reg_rm_displo_disphi("or", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(-1);
+    } break;
+    case OR_IMM_TO_REG_SLASH_MEM: {
+        // 0b1000000[w] [mod]001[r/m] [(disp-lo)] [(disp-hi)] [data] [data if w = 1]
+        if (!handle_sw_mod_rm_displo_disphi_data("or", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(-1);
+    } break;
+    case OR_IMM_TO_ACC: {
+        // 0b0000110[w] [data] [data if w = 1]
+        if (!handle_arith_imm_to_acc("or", asm_binary_file, insts, i, &next_i, out, NULL, false)) nob_return_defer(-1);
+    } break;
+    case XOR_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
+        // 0b001100[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
+        if (!handle_dw_mod_reg_rm_displo_disphi("xor", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(-1);
+    } break;
+    case XOR_IMM_TO_REG_SLASH_MEM: {
+        // 0b0000110[w] [mod]110[r/m] [(disp-lo)] [(disp-hi)] [data] [data if w = 1]
+        if (!handle_sw_mod_rm_displo_disphi_data("xor", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(-1);
+    } break;
+    case XOR_IMM_TO_ACC: {
+        // 0b0011010[w] [data] [data if w = 1]
+        if (!handle_arith_imm_to_acc("xor", asm_binary_file, insts, i, &next_i, out, NULL, false)) nob_return_defer(-1);
+    } break;
+    case REP: {
+        // 0b1111001[z]
+        // z: 0 Repeat/loop while zero flag is clear
+        //    1 Repeat/loop while zero flag is set
+        // TODO: Not sure how to use the z bit
+        nob_sb_append_cstr(out, "rep\n");
+    } break;
+    case MOVS: {
+        // 0b1010010[w]
+        u8 w = byte & 0b01;
+        nob_sb_appendf(out, "movs%c\n", (1 == w) ? 'w' : 'b');
+    } break;
+    case CMPS: {
+        // 0b1010011[w]
+        u8 w = byte & 0b01;
+        nob_sb_appendf(out, "cmps%c\n", (1 == w) ? 'w' : 'b');
+    } break;
+    case SCAS: {
+        // 0b1010111[w]
+        u8 w = byte & 0b01;
+        nob_sb_appendf(out, "scas%c\n", (1 == w) ? 'w' : 'b');
+    } break;
+    case LODS: {
+        // 0b1010110[w]
+        u8 w = byte & 0b01;
+        nob_sb_appendf(out, "lods%c\n", (1 == w) ? 'w' : 'b');
+    } break;
+    case STOS: {
+        // 0b1010101[w]
+        u8 w = byte & 0b01;
+        nob_sb_appendf(out, "stos%c\n", (1 == w) ? 'w' : 'b');
+    } break;
+    case CALL_INDIRECT_WITHIN_SEG: {
+        // 0b11111111 [mod]010[r/m] [(disp-lo)] [(disp-hi)]
+        if (!handle_dw_mod_reg_rm_displo_disphi("call", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(-1);
+    } break;
+    case CALL_INDIRECT_INTER_SEG: {
+        // 0b11111111 [mod]011[r/m] [(disp-lo)] [(disp-hi)]
+        if (!handle_dw_mod_reg_rm_displo_disphi("call", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(-1);
+    } break;
+    case CALL_DIRECT_INTER_SEG: {
+        // 0b10011010 [ip-lo] [ip-hi] [cs-lo] [cs-hi]
+        u8 ip_low_byte  = (u8) insts.items[next_i++];
+        u8 ip_high_byte = (u8) insts.items[next_i++];
+        u8 cs_low_byte  = (u8) insts.items[next_i++];
+        u8 cs_high_byte = (u8) insts.items[next_i++];
+        nob_sb_appendf(out, "call %d:%d\n", (cs_high_byte << 8) | cs_low_byte, (ip_high_byte << 8) | ip_low_byte);
+    } break;
+    case JMP_INDIRECT_WITHIN_SEG: {
+        // 0b11111111 [mod]100[r/m] [(disp-lo)] [(disp-hi)]
+        if (!handle_dw_mod_reg_rm_displo_disphi("jmp", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(-1);
+    } break;
+    case JMP_INDIRECT_INTER_SEG: {
+        // 0b11111111 [mod]101[r/m] [(disp-lo)] [(disp-hi)]
+        if (!handle_dw_mod_reg_rm_displo_disphi("jmp", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(-1);
+    } break;
+    case JMP_DIRECT_INTER_SEG: {
+        // 0b11101010 [ip-lo] [ip-hi] [cs-lo] [cs-hi]
+        u8 ip_low_byte  = (u8) insts.items[next_i++];
+        u8 ip_high_byte = (u8) insts.items[next_i++];
+        u8 cs_low_byte  = (u8) insts.items[next_i++];
+        u8 cs_high_byte = (u8) insts.items[next_i++];
+        nob_sb_appendf(out, "jmp %d:%d\n", (cs_high_byte << 8) | cs_low_byte, (ip_high_byte << 8) | ip_low_byte);
+    } break;
+    case RET_WITHIN_SEG_ADDING_IMM_TO_SP: {
+        // 0b11000010 [(data-lo)] [(data-hi)]
+        if (!handle_arith_imm_to_acc("ret", asm_binary_file, insts, i, &next_i, out, "", true)) nob_return_defer(-1);
+    } break;
+    case RET_WITHIN_SEG: {
+        // 0b11000011
+        nob_sb_append_cstr(out, "ret\n");
+    } break;
+    case JNE_OR_JNZ: {
+        // 0b01110101 [IP-INC8]
+        nob_sb_append_cstr(out, ";jne/jnz\n");
+        if (!handle_jumps("jne", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(-1);
+    } break;
+    case JE_OR_JZ: {
+        // 0b01110100 [IP-INC8]
+        nob_sb_append_cstr(out, ";je/jz\n");
+        if (!handle_jumps("je", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(-1);
+    } break;
+    case JL_OR_JNGE: {
+        // 0b01111100 [IP-INC8]
+        nob_sb_append_cstr(out, ";jl/jnge\n");
+        if (!handle_jumps("jl", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(-1);
+    } break;
+    case JNL_OR_JGE: {
+        // 0b01111101 [IP-INC8]
+        nob_sb_append_cstr(out, ";jnl/jge\n");
+        if (!handle_jumps("jnl", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(-1);
+    } break;
+    case JLE_OR_JNG: {
+        // 0b01111110 [IP-INC8]
+        nob_sb_append_cstr(out, ";jle/jng\n");
+        if (!handle_jumps("jle", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(-1);
+    } break;
+    case JNLE_OR_JG: {
+        // 0b01111111 [IP-INC8]
+        nob_sb_append_cstr(out, ";jnle/jg\n");
+        if (!handle_jumps("jnle", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(-1);
+    } break;
+    case JB_OR_JNAE: {
+        // 0b01110010 [IP-INC8]
+        nob_sb_append_cstr(out, ";jb/jnae\n");
+        if (!handle_jumps("jb", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(-1);
+    } break;
+    case JNB_OR_JAE: {
+        // 0b01110011 [IP-INC8]
+        nob_sb_append_cstr(out, ";jnb/jae\n");
+        if (!handle_jumps("jnb", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(-1);
+    } break;
+    case JBE_OR_JNA: {
+        // 0b01110110 [IP-INC8]
+        nob_sb_append_cstr(out, ";jbe/jna\n");
+        if (!handle_jumps("jbe", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(-1);
+    } break;
+    case JNBE_OR_JA: {
+        // 0b01110111 [IP-INC8]
+        nob_sb_append_cstr(out, ";jnbe/ja\n");
+        if (!handle_jumps("jnbe", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(-1);
+    } break;
+    case JP_OR_JPE: {
+        // 0b01111010 [IP-INC8]
+        nob_sb_append_cstr(out, ";jp/jpe\n");
+        if (!handle_jumps("jp", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(-1);
+    } break;
+    case JNP_OR_JPO: {
+        // 0b01111011 [IP-INC8]
+        nob_sb_append_cstr(out, ";jnp/jpo\n");
+        if (!handle_jumps("jnp", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(-1);
+    } break;
+    case JOVFLOW: {
+        // 0b01110000 [IP-INC8]
+        if (!handle_jumps("jo", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(-1);
+    } break;
+    case JNOVFLOW: {
+        // 0b01110001 [IP-INC8]
+        if (!handle_jumps("jno", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(-1);
+    } break;
+    case JSIGN: {
+        // 0b01111000 [IP-INC8]
+        if (!handle_jumps("js", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(-1);
+    } break;
+    case JNSIGN: {
+        // 0b01111001 [IP-INC8]
+        if (!handle_jumps("jns", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(-1);
+    } break;
+    case LOOP: {
+        // 0b11100010 [IP-INC8]
+        if (!handle_jumps("loop", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(-1);
+    } break;
+    case JCXZ: {
+        // 0b11100011 [IP-INC8]
+        if (!handle_jumps("jcxz", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(-1);
+    } break;
+    case LOOPNZ_OR_LOOPNE: {
+        // 0b11100000 [IP-INC8]
+        nob_sb_append_cstr(out, ";loopnz/loopne\n");
+        if (!handle_jumps("loopnz", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(-1);
+    } break;
+    case LOOPZ_OR_LOOPE: {
+        // 0b11100001 [IP-INC8]
+        nob_sb_append_cstr(out, ";loopz/loope\n");
+        if (!handle_jumps("loopz", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(-1);
+    } break;
+    case INT_TYPE_SPECIFIED: {
+        // 0b11001101 [(data-8)]
+        u8 orig = (u8) insts.items[i];
+        insts.items[i] = orig ^ 0b01;
+        if (!handle_arith_imm_to_acc("int", asm_binary_file, insts, i, &next_i, out, "", false)) nob_return_defer(-1);
+        insts.items[i] = orig;
+    } break;
+    case INT3: {
+        // 0b11001100
+        nob_sb_append_cstr(out, "int3\n");
+    } break;
+    case INTO: {
+        // 0b11001110
+        nob_sb_append_cstr(out, "into\n");
+    } break;
+    case IRET: {
+        // 0b11001111
+        nob_sb_append_cstr(out, "iret\n");
+    } break;
+    case CLC: {
+        // 0b11111000
+        nob_sb_append_cstr(out, "clc\n");
+    } break;
+    case CMC: {
+        // 0b11110101
+        nob_sb_append_cstr(out, "cmc\n");
+    } break;
+    case STC: {
+        // 0b11111001
+        nob_sb_append_cstr(out, "stc\n");
+    } break;
+    case CLD: {
+        // 0b11111100
+        nob_sb_append_cstr(out, "cld\n");
+    } break;
+    case STD: {
+        // 0b11111101
+        nob_sb_append_cstr(out, "std\n");
+    } break;
+    case CLI: {
+        // 0b11111010
+        nob_sb_append_cstr(out, "cli\n");
+    } break;
+    case STI: {
+        // 0b11111011
+        nob_sb_append_cstr(out, "sti\n");
+    } break;
+    case HLT: {
+        // 0b11110100
+        nob_sb_append_cstr(out, "hlt\n");
+    } break;
+    case WAIT: {
+        // 0b10011011
+        nob_sb_append_cstr(out, "wait\n");
+    } break;
+    case LOCK: {
+        // 0b11110000
+        nob_sb_append_cstr(out, "lock\n");
+    } break;
+    case SEG_OVERIDE_PREFIX: {
+        // 0b001[reg]110
+        // We can directly use the `db` for emitting the same bytes
+        nob_sb_appendf(out, "db 0b%.8b\n", byte);
+    } break;
+    case OP_KIND_COUNT: // fallthrough
+    default:
+        NOB_UNREACHABLE(nob_temp_sprintf("Unhandled op_kind: %d at %s:1:%d", op_kind, asm_binary_file, i + 1));
+        nob_return_defer(-1);
+    }
+    nob_sb_append_cstr(out, ";");
+    for (u32 j = i; j < next_i; j++) {
+        nob_sb_appendf(out, " %.8b", (u8) insts.items[j]);
+    }
+    nob_sb_append_cstr(out, "\n");
+
+    result = (s64) next_i;
+defer:
+    return result;
+}
+
 bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
     bool result = false;
     Nob_String_Builder insts = {0};
     if (!nob_read_entire_file(asm_binary_file, &insts)) nob_return_defer(false);
     nob_sb_appendf(out, "; Decoded assembly for %s\nbits 16\n", asm_binary_file);
-    size_t prev = out->count;
+    // size_t prev = out->count;
     for (u32 i = 0; i < insts.count;) {
-        printf("%.*s", (int) (out->count - prev), out->items + prev);
-        prev = out->count;
-        u8 byte = (u8) insts.items[i];
-        u32 next_i = i + 1;
-        Op_Kind op_kind;
-        if (!get_op_kind(asm_binary_file, insts, i, &op_kind)) {
-            nob_return_defer(false);
-        }
-        // d 0 - Instruction source is specified in <reg> field
-        // d 1 - Instruction destination is specified in <reg> field
-        //
-        // w 0 - Instructions operate on byte data
-        // w 1 - Instructions operate on word data
-        //
-        // mod 00 - Memory mode, no displacement follows (exception is when r/m is 110, i.e.; Direct Address)
-        // mod 01 - Memory mode, 8-bit displacement follows
-        // mod 10 - Memory mode, 16-bit displacement follows
-        // mod 11 - Register mode, no displacement follows
-        //
-        // w reg
-        // 0 000 al
-        // 0 001 cl
-        // 0 010 dl
-        // 0 011 bl
-        // 0 100 ah
-        // 0 101 ch
-        // 0 110 dh
-        // 0 111 bh
-        // 1 000 ax
-        // 1 001 cx
-        // 1 010 dx
-        // 1 011 bx
-        // 1 100 sp
-        // 1 101 bp
-        // 1 110 si
-        // 1 111 di
-        //
-        // When mod 11
-        //   r/m is register lookup
-        // Otherwise, combination of mod and r/m is called "Effective Address Calculation"
-        //   mod r/m
-        //   00  000 bx+si
-        //   00  001 bx+di
-        //   00  010 bp+si
-        //   00  011 bp+di
-        //   00  100 si
-        //   00  101 di
-        //   00  110 DIRECT ADDRESS (16 bits displacement)
-        //   00  111 bx
-        //
-        //   01  000 bx+si+d8 (8 bits displacement)
-        //   01  001 bx+di+d8 (8 bits displacement)
-        //   01  010 bp+si+d8 (8 bits displacement)
-        //   01  011 bp+di+d8 (8 bits displacement)
-        //   01  100 si+d8    (8 bits displacement)
-        //   01  101 di+d8    (8 bits displacement)
-        //   01  110 bp+d8    (8 bits displacement)
-        //   01  111 bx+d8    (8 bits displacement)
-        //
-        //   11  000 bx+si+d16 (16 bits displacement)
-        //   11  001 bx+di+d16 (16 bits displacement)
-        //   11  010 bp+si+d16 (16 bits displacement)
-        //   11  011 bp+di+d16 (16 bits displacement)
-        //   11  100 si+d16    (16 bits displacement)
-        //   11  101 di+d16    (16 bits displacement)
-        //   11  110 bp+d16    (16 bits displacement)
-        //   11  111 bx+d16    (16 bits displacement)
-        switch(op_kind) {
-        case MOV_REG_SLASH_MEM_TO_OR_FROM_REG: {
-            // 0b100010[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
-            if (!handle_dw_mod_reg_rm_displo_disphi("mov", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
-        } break;
-        case MOV_IMM_TO_REG: {
-            // 0b1011[w][reg] [data] [data if w = 1]
-            u8 w = (byte >> 3) & 0b01;
-            const char *reg = NOB_ARRAY_GET(register_lookup, (byte & 0b1111));
-            if (!ensure_next_n_bytes(asm_binary_file, insts, i, (1 == w) ? 2 : 1)) nob_return_defer(false);
-            s16 immediate_value;
-            if (1 == w) {
-                immediate_value = (s16) disp16(insts, next_i); next_i += 2;
-            } else {
-                immediate_value = (s16) (s8) disp8(insts, next_i); next_i += 1;
-            }
-            nob_sb_appendf(out, "mov %s, %d\n", reg, immediate_value);
-        } break;
-        case MOV_IMM_TO_REG_SLASH_MEM: {
-            // 0b1100011[w] [mod]000[r/m] [(disp-lo)] [(disp-hi)] [data] [data if w = 1]
-            if (!handle_sw_mod_rm_displo_disphi_data("mov", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
-        } break;
-        case MOV_MEMORY_TO_ACC: {
-            // 0b1010000[w] [addr-lo] [addr-hi]
-            if (!ensure_next_n_bytes(asm_binary_file, insts, i, 2)) nob_return_defer(false);
-            s16 direct_addr = (s16) disp16(insts, next_i); next_i += 2;
-            u8 w = byte & 0b01;
-            const char *acc_reg = register_lookup(w, 0b000);
-            nob_sb_appendf(out, "mov %s, [%d]\n", acc_reg, direct_addr);
-        } break;
-        case MOV_ACC_TO_MEMORY: {
-            // 0b1010001[w] [addr-lo] [addr-hi]
-            if (!ensure_next_n_bytes(asm_binary_file, insts, i, 2)) nob_return_defer(false);
-            s16 direct_addr = (s16) disp16(insts, next_i); next_i += 2;
-            u8 w = byte & 0b01;
-            const char *acc_reg = register_lookup(w, 0b000);
-            nob_sb_appendf(out, "mov [%d], %s\n", direct_addr, acc_reg);
-        } break;
-        case PUSH_REG_SLASH_MEM: {
-            // 0b11111111 [mod]110[r/m] [(disp-lo)] [(disp-hi)]
-            if (!handle_dw_mod_reg_rm_displo_disphi("push", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
-        } break;
-        case PUSH_REG: {
-            // 0b01010[reg]
-            u8 reg = byte & 0b111;
-            nob_sb_appendf(out, "push %s\n", register_lookup(1, reg));
-        } break;
-        case PUSH_SEG_REG: {
-            // 0b000[reg]110
-            // Note that reg is a segment register encoded as 2-bits
-            u8 reg = (byte >> 3) & 0b11;
-            nob_sb_appendf(out, "push %s\n", segment_register_lookup(reg));
-        } break;
-        case POP_REG_SLASH_MEM: {
-            // 0b10001111 [mod]110[r/m] [(disp-lo)] [(disp-hi)]
-            if (!handle_dw_mod_reg_rm_displo_disphi("pop", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
-        } break;
-        case POP_REG: {
-            // 0b01011[reg]
-            u8 reg = byte & 0b111;
-            nob_sb_appendf(out, "pop %s\n", register_lookup(1, reg));
-        } break;
-        case POP_SEG_REG: {
-            // 0b000[reg]111
-            // Note that reg is a segment register encoded as 2-bits
-            u8 reg = (byte >> 3) & 0b11;
-            nob_sb_appendf(out, "pop %s\n", segment_register_lookup(reg));
-        } break;
-        case XCHG_REG_SLASH_MEM_TO_OR_FROM_REG: {
-            // 0b1000011[w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
-            if (!handle_dw_mod_reg_rm_displo_disphi("xchg", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
-        } break;
-        case XCHG_REG_WITH_ACC: {
-            // 0b10010[reg]
-            nob_sb_appendf(out, "xchg ax, %s\n", register_lookup(1, byte & 0b111));
-        } break;
-        case IN_FROM_FIXED_PORT: {
-            // 0b1110010[w] [data-8]
-            if (!ensure_next_n_bytes(asm_binary_file, insts, i, 2)) nob_return_defer(false);
-            u8 imm_val = insts.items[next_i]; next_i += 1;
-            u8 w = byte & 0b01;
-            nob_sb_appendf(out, "in %s, %d\n", register_lookup(w, 0b000), imm_val);
-        } break;
-        case IN_FROM_VAR_PORT: {
-            // 0b1110110[w]
-            u8 w = byte & 0b01;
-            nob_sb_appendf(out, "in %s, dx\n", register_lookup(w, 0b000));
-        } break;
-        case OUT_TO_FIXED_PORT: {
-            // 0b1110011[w] [data-8]
-            if (!ensure_next_n_bytes(asm_binary_file, insts, i, 2)) nob_return_defer(false);
-            u8 imm_val = insts.items[next_i]; next_i += 1;
-            u8 w = byte & 0b01;
-            nob_sb_appendf(out, "out %d, %s\n", imm_val, register_lookup(w, 0b000));
-        } break;
-        case OUT_TO_VAR_PORT: {
-            // 0b1110111[w]
-            u8 w = byte & 0b01;
-            nob_sb_appendf(out, "out dx, %s\n", register_lookup(w, 0b000));
-        } break;
-        case XLAT: {
-            // 0b11010111
-            nob_sb_append_cstr(out, "xlat\n");
-        } break;
-        case LEA: {
-            // 0b10001101 [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
-            u8 orig = insts.items[i];
-            insts.items[i] = orig | 0b10; // setting [d] bit
-            if (!handle_dw_mod_reg_rm_displo_disphi("lea", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
-            insts.items[i] = orig;
-        } break;
-        case LDS: {
-            // 0b11000101 [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
-            u8 orig = insts.items[i];
-            insts.items[i] = orig | 0b10; // setting [d] bit
-            if (!handle_dw_mod_reg_rm_displo_disphi("lds", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
-            insts.items[i] = orig;
-        } break;
-        case LES: {
-            // 0b11000100 [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
-            u8 orig = insts.items[i];
-            insts.items[i] = orig | 0b11; // setting [d] and [w] bits
-            if (!handle_dw_mod_reg_rm_displo_disphi("les", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
-            insts.items[i] = orig;
-        } break;
-        case LAHF: {
-            // 0b10011111
-            nob_sb_append_cstr(out, "lahf\n");
-        } break;
-        case SAHF: {
-            // 0b10011110
-            nob_sb_append_cstr(out, "sahf\n");
-        } break;
-        case PUSHF: {
-            // 0b10011100
-            nob_sb_append_cstr(out, "pushf\n");
-        } break;
-        case POPF: {
-            // 0b10011101
-            nob_sb_append_cstr(out, "popf\n");
-        } break;
-        case ADD_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
-            // 0b000000[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
-            if (!handle_dw_mod_reg_rm_displo_disphi("add", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
-        } break;
-        case ADD_IMM_TO_REG_SLASH_MEM: {
-            // 0b100000[s][w] [mod]000[r/m] [(disp-lo)] [(disp-hi)] [data] [data if w = 1]
-            if (!handle_sw_mod_rm_displo_disphi_data("add", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
-        } break;
-        case ADD_IMM_TO_ACC: {
-            // 0b0000010[w] [data] [data if w = 1]
-            if (!handle_arith_imm_to_acc("add", asm_binary_file, insts, i, &next_i, out, NULL, false)) nob_return_defer(false);
-        } break;
-        case ADC_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
-            // 0b000100[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
-            if (!handle_dw_mod_reg_rm_displo_disphi("adc", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
-        } break;
-        case ADC_IMM_TO_REG_SLASH_MEM: {
-            // 0b100000[s][w] [mod]010[r/m] [(disp-lo)] [(disp-hi)] [data] [data if w = 1]
-            if (!handle_sw_mod_rm_displo_disphi_data("adc", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
-        } break;
-        case ADC_IMM_TO_ACC: {
-            // 0b0001010[w] [data] [data if w = 1]
-            if (!handle_arith_imm_to_acc("adc", asm_binary_file, insts, i, &next_i, out, NULL, false)) nob_return_defer(false);
-        } break;
-        case INC_REG: {
-            // 0b01000[reg]
-            nob_sb_appendf(out, "inc %s\n", register_lookup(1, byte & 0b111));
-        } break;
-        case INC_REG_SLASH_MEM: {
-            // 0b1111111[w] [mod]000[r/m] [(disp-lo)] [(disp-hi)]
-            if (!handle_dw_mod_reg_rm_displo_disphi("inc", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
-        } break;
-        case AAA: {
-            // 0b00110111
-            nob_sb_append_cstr(out, "aaa\n");
-        } break;
-        case DAA: {
-            // 0b00100111
-            nob_sb_append_cstr(out, "daa\n");
-        } break;
-        case SUB_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
-            // 0b001010[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
-            if (!handle_dw_mod_reg_rm_displo_disphi("sub", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
-        } break;
-        case SUB_IMM_TO_REG_SLASH_MEM: {
-            // 0b100000[s][w] [mod]101[r/m] [(disp-lo)] [(disp-hi)] [data] [data if w = 1]
-            if (!handle_sw_mod_rm_displo_disphi_data("sub", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
-        } break;
-        case SUB_IMM_TO_ACC: {
-            // 0b0010110[w] [data] [data if w = 1]
-            if (!handle_arith_imm_to_acc("sub", asm_binary_file, insts, i, &next_i, out, NULL, false)) nob_return_defer(false);
-        } break;
-        case SBB_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
-            // 0b000110[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
-            if (!handle_dw_mod_reg_rm_displo_disphi("sbb", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
-        } break;
-        case SBB_IMM_TO_REG_SLASH_MEM: {
-            // 0b100000[s][w] [mod]011[r/m] [(disp-lo)] [(disp-hi)] [data] [data if w = 1]
-            if (!handle_sw_mod_rm_displo_disphi_data("sbb", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
-        } break;
-        case SBB_IMM_TO_ACC: {
-            // 0b0001110[w] [data] [data if w = 1]
-            if (!handle_arith_imm_to_acc("sbb", asm_binary_file, insts, i, &next_i, out, NULL, false)) nob_return_defer(false);
-        } break;
-        case DEC_REG: {
-            // 0b01001[reg]
-            nob_sb_appendf(out, "dec %s\n", register_lookup(1, byte & 0b111));
-        } break;
-        case DEC_REG_SLASH_MEM: {
-            // 0b1111111[w] [mod]001[r/m] [(disp-lo)] [(disp-hi)]
-            if (!handle_dw_mod_reg_rm_displo_disphi("dec", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
-        } break;
-        case NEG: {
-            // 0b1111011[w] [mod]011[r/m] [(disp-lo)] [(disp-hi)]
-            if (!handle_dw_mod_reg_rm_displo_disphi("neg", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
-        } break;
-        case CMP_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
-            // 0b001110[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
-            if (!handle_dw_mod_reg_rm_displo_disphi("cmp", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
-        } break;
-        case CMP_IMM_TO_REG_SLASH_MEM: {
-            // 0b100000[s][w] [mod]111[r/m] [(disp-lo)] [(disp-hi)] [data] [data if w = 1]
-            if (!handle_sw_mod_rm_displo_disphi_data("cmp", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
-        } break;
-        case CMP_IMM_TO_ACC: {
-            // 0b0011110[w] [data] [data if w = 1]
-            if (!handle_arith_imm_to_acc("cmp", asm_binary_file, insts, i, &next_i, out, NULL, false)) nob_return_defer(false);
-        } break;
-        case AAS: {
-            // 0b00111111
-            nob_sb_append_cstr(out, "aas\n");
-        } break;
-        case DAS: {
-            // 0b00101111
-            nob_sb_append_cstr(out, "das\n");
-        } break;
-        case MUL: {
-            // 0b1111011[w] [mod]100[r/m] [(disp-lo)] [(disp-hi)]
-            if (!ensure_next_n_bytes(asm_binary_file, insts, i, 2)) nob_return_defer(false);
-            u8 orig = insts.items[i + 1];
-            insts.items[i + 1] = orig ^ 0b00100000;
-            if (!handle_dw_mod_reg_rm_displo_disphi("mul", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
-            insts.items[i + 1] = orig;
-        } break;
-        case IMUL: {
-            // 0b1111011[w] [mod]101[r/m] [(disp-lo)] [(disp-hi)]
-            if (!handle_dw_mod_reg_rm_displo_disphi("imul", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
-        } break;
-        case AAM: {
-            // 0b11010100 0b00001010 [(disp-lo)] [(disp-hi)]
-            // TODO: Not sure how `aam` instruction uses the displacement values
-            next_i += 1;
-            nob_sb_append_cstr(out, "aam\n");
-        } break;
-        case DIV: {
-            // 0b1111011[w] [mod]110[r/m] [(disp-lo)] [(disp-hi)]
-            if (!ensure_next_n_bytes(asm_binary_file, insts, i, 2)) nob_return_defer(false);
-            u8 orig = insts.items[i + 1];
-            insts.items[i + 1] = orig ^ 0b00100000;
-            if (!handle_dw_mod_reg_rm_displo_disphi("div", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
-            insts.items[i + 1] = orig;
-        } break;
-        case IDIV: {
-            // 0b1111011[w] [mod]111[r/m] [(disp-lo)] [(disp-hi)]
-            if (!handle_dw_mod_reg_rm_displo_disphi("idiv", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
-        } break;
-        case AAD: {
-            // 0b11010101 0b00001010 [(disp-lo)] [(disp-hi)]
-            // TODO: Not sure how `aam` instruction uses the displacement values
-            next_i += 1;
-            nob_sb_append_cstr(out, "aad\n");
-        } break;
-        case CBW: {
-            // 0b10011000
-            nob_sb_append_cstr(out, "cbw\n");
-        } break;
-        case CWD: {
-            // 0b10011001
-            nob_sb_append_cstr(out, "cwd\n");
-        } break;
-        case NOT: {
-            // 0b11110110[w] [mod]010[r/m] [(disp-lo)] [(disp-hi)]
-            if (!handle_dw_mod_reg_rm_displo_disphi("not", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
-        } break;
-        case SHL_OR_SAL: {
-            // 0b110100[v][w] [mod]100[r/m] [(disp-lo)] [(disp-hi)]
-            nob_sb_append_cstr(out, ";shl/sal\n");
-            if (!handle_vw_mod_reg_rm_displo_disphi("shl", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
-        } break;
-        case SHR: {
-            // 0b110100[v][w] [mod]101[r/m] [(disp-lo)] [(disp-hi)]
-            if (!handle_vw_mod_reg_rm_displo_disphi("shr", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
-        } break;
-        case SAR: {
-            // 0b110100[v][w] [mod]111[r/m] [(disp-lo)] [(disp-hi)]
-            if (!handle_vw_mod_reg_rm_displo_disphi("sar", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
-        } break;
-        case ROL: {
-            // 0b110100[v][w] [mod]000[r/m] [(disp-lo)] [(disp-hi)]
-            if (!handle_vw_mod_reg_rm_displo_disphi("rol", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
-        } break;
-        case ROR: {
-            // 0b110100[v][w] [mod]001[r/m] [(disp-lo)] [(disp-hi)]
-            if (!handle_vw_mod_reg_rm_displo_disphi("ror", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
-        } break;
-        case RCL: {
-            // 0b110100[v][w] [mod]010[r/m] [(disp-lo)] [(disp-hi)]
-            if (!handle_vw_mod_reg_rm_displo_disphi("rcl", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
-        } break;
-        case RCR: {
-            // 0b110100[v][w] [mod]011[r/m] [(disp-lo)] [(disp-hi)]
-            if (!handle_vw_mod_reg_rm_displo_disphi("rcr", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
-        } break;
-        case AND_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
-            // 0b001000[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
-            if (!handle_dw_mod_reg_rm_displo_disphi("and", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
-        } break;
-        case AND_IMM_TO_REG_SLASH_MEM: {
-            // 0b1000000[w] [mod]100[r/m] [(disp-lo)] [(disp-hi)] [data] [data if w = 1]
-            if (!handle_sw_mod_rm_displo_disphi_data("and", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
-        } break;
-        case AND_IMM_TO_ACC: {
-            // 0b0010010[w] [data] [data if w = 1]
-            if (!handle_arith_imm_to_acc("and", asm_binary_file, insts, i, &next_i, out, NULL, false)) nob_return_defer(false);
-        } break;
-        case TEST_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
-            // 0b100001[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
-            if (!handle_dw_mod_reg_rm_displo_disphi("test", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
-        } break;
-        case TEST_IMM_TO_REG_SLASH_MEM: {
-            // 0b1111011[w] [mod]000[r/m] [(disp-lo)] [(disp-hi)] [data] [data if w = 1]
-            if (!handle_sw_mod_rm_displo_disphi_data("test", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
-        } break;
-        case TEST_IMM_TO_ACC: {
-            // 0b1010100[w] [data] [data if w = 1]
-            if (!handle_arith_imm_to_acc("test", asm_binary_file, insts, i, &next_i, out, NULL, false)) nob_return_defer(false);
-        } break;
-        case OR_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
-            // 0b000010[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
-            if (!handle_dw_mod_reg_rm_displo_disphi("or", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
-        } break;
-        case OR_IMM_TO_REG_SLASH_MEM: {
-            // 0b1000000[w] [mod]001[r/m] [(disp-lo)] [(disp-hi)] [data] [data if w = 1]
-            if (!handle_sw_mod_rm_displo_disphi_data("or", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
-        } break;
-        case OR_IMM_TO_ACC: {
-            // 0b0000110[w] [data] [data if w = 1]
-            if (!handle_arith_imm_to_acc("or", asm_binary_file, insts, i, &next_i, out, NULL, false)) nob_return_defer(false);
-        } break;
-        case XOR_REG_SLASH_MEM_WITH_REG_TO_EITHER: {
-            // 0b001100[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
-            if (!handle_dw_mod_reg_rm_displo_disphi("xor", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
-        } break;
-        case XOR_IMM_TO_REG_SLASH_MEM: {
-            // 0b0000110[w] [mod]110[r/m] [(disp-lo)] [(disp-hi)] [data] [data if w = 1]
-            if (!handle_sw_mod_rm_displo_disphi_data("xor", asm_binary_file, insts, i, &next_i, out, true)) nob_return_defer(false);
-        } break;
-        case XOR_IMM_TO_ACC: {
-            // 0b0011010[w] [data] [data if w = 1]
-            if (!handle_arith_imm_to_acc("xor", asm_binary_file, insts, i, &next_i, out, NULL, false)) nob_return_defer(false);
-        } break;
-        case REP: {
-            // 0b1111001[z]
-            // z: 0 Repeat/loop while zero flag is clear
-            //    1 Repeat/loop while zero flag is set
-            // TODO: Not sure how to use the z bit
-            nob_sb_append_cstr(out, "rep\n");
-        } break;
-        case MOVS: {
-            // 0b1010010[w]
-            u8 w = byte & 0b01;
-            nob_sb_appendf(out, "movs%c\n", (1 == w) ? 'w' : 'b');
-        } break;
-        case CMPS: {
-            // 0b1010011[w]
-            u8 w = byte & 0b01;
-            nob_sb_appendf(out, "cmps%c\n", (1 == w) ? 'w' : 'b');
-        } break;
-        case SCAS: {
-            // 0b1010111[w]
-            u8 w = byte & 0b01;
-            nob_sb_appendf(out, "scas%c\n", (1 == w) ? 'w' : 'b');
-        } break;
-        case LODS: {
-            // 0b1010110[w]
-            u8 w = byte & 0b01;
-            nob_sb_appendf(out, "lods%c\n", (1 == w) ? 'w' : 'b');
-        } break;
-        case STOS: {
-            // 0b1010101[w]
-            u8 w = byte & 0b01;
-            nob_sb_appendf(out, "stos%c\n", (1 == w) ? 'w' : 'b');
-        } break;
-        case CALL_INDIRECT_WITHIN_SEG: {
-            // 0b11111111 [mod]010[r/m] [(disp-lo)] [(disp-hi)]
-            if (!handle_dw_mod_reg_rm_displo_disphi("call", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
-        } break;
-        case CALL_INDIRECT_INTER_SEG: {
-            // 0b11111111 [mod]011[r/m] [(disp-lo)] [(disp-hi)]
-            if (!handle_dw_mod_reg_rm_displo_disphi("call", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
-        } break;
-        case CALL_DIRECT_INTER_SEG: {
-            // 0b10011010 [ip-lo] [ip-hi] [cs-lo] [cs-hi]
-            u8 ip_low_byte  = (u8) insts.items[next_i++];
-            u8 ip_high_byte = (u8) insts.items[next_i++];
-            u8 cs_low_byte  = (u8) insts.items[next_i++];
-            u8 cs_high_byte = (u8) insts.items[next_i++];
-            nob_sb_appendf(out, "call %d:%d\n", (cs_high_byte << 8) | cs_low_byte, (ip_high_byte << 8) | ip_low_byte);
-        } break;
-        case JMP_INDIRECT_WITHIN_SEG: {
-            // 0b11111111 [mod]100[r/m] [(disp-lo)] [(disp-hi)]
-            if (!handle_dw_mod_reg_rm_displo_disphi("jmp", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
-        } break;
-        case JMP_INDIRECT_INTER_SEG: {
-            // 0b11111111 [mod]101[r/m] [(disp-lo)] [(disp-hi)]
-            if (!handle_dw_mod_reg_rm_displo_disphi("jmp", asm_binary_file, insts, i, &next_i, out, false)) nob_return_defer(false);
-        } break;
-        case JMP_DIRECT_INTER_SEG: {
-            // 0b11101010 [ip-lo] [ip-hi] [cs-lo] [cs-hi]
-            u8 ip_low_byte  = (u8) insts.items[next_i++];
-            u8 ip_high_byte = (u8) insts.items[next_i++];
-            u8 cs_low_byte  = (u8) insts.items[next_i++];
-            u8 cs_high_byte = (u8) insts.items[next_i++];
-            nob_sb_appendf(out, "jmp %d:%d\n", (cs_high_byte << 8) | cs_low_byte, (ip_high_byte << 8) | ip_low_byte);
-        } break;
-        case RET_WITHIN_SEG_ADDING_IMM_TO_SP: {
-            // 0b11000010 [(data-lo)] [(data-hi)]
-            if (!handle_arith_imm_to_acc("ret", asm_binary_file, insts, i, &next_i, out, "", true)) nob_return_defer(false);
-        } break;
-        case RET_WITHIN_SEG: {
-            // 0b11000011
-            nob_sb_append_cstr(out, "ret\n");
-        } break;
-        case JNE_OR_JNZ: {
-            // 0b01110101 [IP-INC8]
-            nob_sb_append_cstr(out, ";jne/jnz\n");
-            if (!handle_jumps("jne", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
-        } break;
-        case JE_OR_JZ: {
-            // 0b01110100 [IP-INC8]
-            nob_sb_append_cstr(out, ";je/jz\n");
-            if (!handle_jumps("je", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
-        } break;
-        case JL_OR_JNGE: {
-            // 0b01111100 [IP-INC8]
-            nob_sb_append_cstr(out, ";jl/jnge\n");
-            if (!handle_jumps("jl", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
-        } break;
-        case JNL_OR_JGE: {
-            // 0b01111101 [IP-INC8]
-            nob_sb_append_cstr(out, ";jnl/jge\n");
-            if (!handle_jumps("jnl", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
-        } break;
-        case JLE_OR_JNG: {
-            // 0b01111110 [IP-INC8]
-            nob_sb_append_cstr(out, ";jle/jng\n");
-            if (!handle_jumps("jle", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
-        } break;
-        case JNLE_OR_JG: {
-            // 0b01111111 [IP-INC8]
-            nob_sb_append_cstr(out, ";jnle/jg\n");
-            if (!handle_jumps("jnle", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
-        } break;
-        case JB_OR_JNAE: {
-            // 0b01110010 [IP-INC8]
-            nob_sb_append_cstr(out, ";jb/jnae\n");
-            if (!handle_jumps("jb", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
-        } break;
-        case JNB_OR_JAE: {
-            // 0b01110011 [IP-INC8]
-            nob_sb_append_cstr(out, ";jnb/jae\n");
-            if (!handle_jumps("jnb", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
-        } break;
-        case JBE_OR_JNA: {
-            // 0b01110110 [IP-INC8]
-            nob_sb_append_cstr(out, ";jbe/jna\n");
-            if (!handle_jumps("jbe", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
-        } break;
-        case JNBE_OR_JA: {
-            // 0b01110111 [IP-INC8]
-            nob_sb_append_cstr(out, ";jnbe/ja\n");
-            if (!handle_jumps("jnbe", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
-        } break;
-        case JP_OR_JPE: {
-            // 0b01111010 [IP-INC8]
-            nob_sb_append_cstr(out, ";jp/jpe\n");
-            if (!handle_jumps("jp", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
-        } break;
-        case JNP_OR_JPO: {
-            // 0b01111011 [IP-INC8]
-            nob_sb_append_cstr(out, ";jnp/jpo\n");
-            if (!handle_jumps("jnp", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
-        } break;
-        case JOVFLOW: {
-            // 0b01110000 [IP-INC8]
-            if (!handle_jumps("jo", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
-        } break;
-        case JNOVFLOW: {
-            // 0b01110001 [IP-INC8]
-            if (!handle_jumps("jno", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
-        } break;
-        case JSIGN: {
-            // 0b01111000 [IP-INC8]
-            if (!handle_jumps("js", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
-        } break;
-        case JNSIGN: {
-            // 0b01111001 [IP-INC8]
-            if (!handle_jumps("jns", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
-        } break;
-        case LOOP: {
-            // 0b11100010 [IP-INC8]
-            if (!handle_jumps("loop", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
-        } break;
-        case JCXZ: {
-            // 0b11100011 [IP-INC8]
-            if (!handle_jumps("jcxz", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
-        } break;
-        case LOOPNZ_OR_LOOPNE: {
-            // 0b11100000 [IP-INC8]
-            nob_sb_append_cstr(out, ";loopnz/loopne\n");
-            if (!handle_jumps("loopnz", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
-        } break;
-        case LOOPZ_OR_LOOPE: {
-            // 0b11100001 [IP-INC8]
-            nob_sb_append_cstr(out, ";loopz/loope\n");
-            if (!handle_jumps("loopz", asm_binary_file, insts, i, &next_i, out)) nob_return_defer(false);
-        } break;
-        case INT_TYPE_SPECIFIED: {
-            // 0b11001101 [(data-8)]
-            u8 orig = (u8) insts.items[i];
-            insts.items[i] = orig ^ 0b01;
-            if (!handle_arith_imm_to_acc("int", asm_binary_file, insts, i, &next_i, out, "", false)) nob_return_defer(false);
-            insts.items[i] = orig;
-        } break;
-        case INT3: {
-            // 0b11001100
-            nob_sb_append_cstr(out, "int3\n");
-        } break;
-        case INTO: {
-            // 0b11001110
-            nob_sb_append_cstr(out, "into\n");
-        } break;
-        case IRET: {
-            // 0b11001111
-            nob_sb_append_cstr(out, "iret\n");
-        } break;
-        case CLC: {
-            // 0b11111000
-            nob_sb_append_cstr(out, "clc\n");
-        } break;
-        case CMC: {
-            // 0b11110101
-            nob_sb_append_cstr(out, "cmc\n");
-        } break;
-        case STC: {
-            // 0b11111001
-            nob_sb_append_cstr(out, "stc\n");
-        } break;
-        case CLD: {
-            // 0b11111100
-            nob_sb_append_cstr(out, "cld\n");
-        } break;
-        case STD: {
-            // 0b11111101
-            nob_sb_append_cstr(out, "std\n");
-        } break;
-        case CLI: {
-            // 0b11111010
-            nob_sb_append_cstr(out, "cli\n");
-        } break;
-        case STI: {
-            // 0b11111011
-            nob_sb_append_cstr(out, "sti\n");
-        } break;
-        case HLT: {
-            // 0b11110100
-            nob_sb_append_cstr(out, "hlt\n");
-        } break;
-        case WAIT: {
-            // 0b10011011
-            nob_sb_append_cstr(out, "wait\n");
-        } break;
-        case LOCK: {
-            // 0b11110000
-            nob_sb_append_cstr(out, "lock\n");
-        } break;
-        case SEG_OVERIDE_PREFIX: {
-            // 0b001[reg]110
-            // We can directly use the `db` for emitting the same bytes
-            nob_sb_appendf(out, "db 0b%.8b\n", byte);
-        } break;
-        case OP_KIND_COUNT: // fallthrough
-        default:
-            NOB_UNREACHABLE(nob_temp_sprintf("Unhandled op_kind: %d at %s:1:%d", op_kind, asm_binary_file, i + 1));
-            nob_return_defer(false);
-        }
-        nob_sb_append_cstr(out, ";");
-        for (u32 j = i; j < next_i; j++) {
-            nob_sb_appendf(out, " %.8b", (u8) insts.items[j]);
-        }
-        nob_sb_append_cstr(out, "\n");
-        i = next_i;
+        // printf("%.*s", (int) (out->count - prev), out->items + prev);
+        // prev = out->count;
+        s64 next_i = decode_one(asm_binary_file, insts, i, out);
+        if (next_i < 0) nob_return_defer(false);
+        i = (u32) next_i;
     }
 
     result = true;
