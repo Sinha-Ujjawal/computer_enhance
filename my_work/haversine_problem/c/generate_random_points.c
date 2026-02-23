@@ -1,0 +1,243 @@
+#include <errno.h>
+#include <limits.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+
+#include "reference_haversine.c"
+
+#define NOB_IMPLEMENTATION
+#include "thirdparty/nob.h"
+#define JIM_IMPLEMENTATION
+#include "thirdparty/jim.h"
+
+double random_double(double min, double max) {
+    double r = ((double) random()) / ((double) RAND_MAX);
+    double range = max - min;
+    return (r * range) + min;
+}
+
+size_t random_size_t(size_t max) {
+    return (size_t) (random_double(0, 1) * max);
+}
+
+bool parse_cstr_as_long(const char *str, long *res) {
+    char *endptr;
+    errno = 0;
+    long val = strtol(str, &endptr, 10);
+    if (str == endptr) { // No digits found
+        nob_log(ERROR, "Could not parse any integer!");
+        return false;
+    }
+    if ((val == LONG_MAX || val == LONG_MIN) && errno == ERANGE) { // Out of range
+        nob_log(ERROR, "Value out of range!");
+        return false;
+    }
+    *res = val;
+    return true;
+}
+
+typedef enum {
+    UNIFORM,
+    CLUSTER
+} Method;
+
+const char *method_as_str[] = {"uniform", "cluster"};
+
+bool parse_as_method(const char *str, Method *method) {
+    for (size_t i = 0; i < ARRAY_LEN(method_as_str); i++) {
+        if (strcmp(str, method_as_str[i]) == 0) {
+            *method = (Method) i;
+            return true;
+        }
+    }
+    return false;
+}
+
+typedef struct {
+    const char *program;
+    Method     method;
+    long       seed;
+    long       num_pair_points;
+    const char *out_file;
+} Arguments;
+
+void usage(const char *program) {
+    nob_log(INFO, "This is a command line utility to generate random pairs of points for haversine distance calculation problem in Computer Enhance course");
+    nob_log(INFO, "Usage: %s <method> <seed> <num_pair_points> <out_file>", program);
+    nob_log(INFO, "  <method>         : [uniform/cluster]");
+    nob_log(INFO, "  <seed>           : Random seed as integer");
+    nob_log(INFO, "  <num_pair_points>: No. of points to generate");
+    nob_log(INFO, "  <out_file>       : Output file path");
+}
+
+bool generate(Arguments args) {
+    static int precision = 10;
+    static long buffer_size = 10000;
+    bool result = false;
+    FILE *out_file_fp = NULL;
+    Jim jim = {0};
+    // Jim jim = {.pp = 4};
+    nob_log(INFO, "Method: %s", method_as_str[args.method]);
+    nob_log(INFO, "Random Seed: %ld", args.seed);
+    nob_log(INFO, "Num of Pairs: %ld", args.num_pair_points);
+    nob_log(INFO, "Out file: %s", args.out_file);
+    out_file_fp = fopen(args.out_file, "w");
+    if (out_file_fp == NULL) {
+        nob_log(ERROR, "Could not open file: `%s` for writing!", args.out_file);
+        return_defer(false);
+    }
+    srand(args.seed);
+    jim_object_begin(&jim);
+        double avg_hd = 0.0;
+        static double earth_radius = 6372.8;
+        jim_member_key(&jim, "pairs");
+        jim_array_begin(&jim);
+            switch (args.method) {
+            #define populate_points                                                                           \
+                for (long count = 0; count < args.num_pair_points; count++) {                                 \
+                    if (count > 0 && count % buffer_size == 0) {                                              \
+                        nob_log(INFO, "Writing %ld pairs into the file: %s", buffer_size, args.out_file);     \
+                        if (!fwrite(jim.sink, jim.sink_count, 1, out_file_fp)) return_defer(false);           \
+                        jim.sink_count = 0;                                                                   \
+                    }                                                                                         \
+                    custom_stmt                                                                               \
+                    double x0 = random_x;                                                                     \
+                    double y0 = random_y;                                                                     \
+                    double x1 = random_x;                                                                     \
+                    double y1 = random_y;                                                                     \
+                    double hd = ReferenceHaversine(x0, y0, x1, y1, earth_radius);                             \
+                    jim_object_begin(&jim);                                                                   \
+                        jim_member_key(&jim, "x0")                  ; jim_float(&jim, (float) x0, precision); \
+                        jim_member_key(&jim, "y0")                  ; jim_float(&jim, (float) y0, precision); \
+                        jim_member_key(&jim, "x1")                  ; jim_float(&jim, (float) x1, precision); \
+                        jim_member_key(&jim, "y1")                  ; jim_float(&jim, (float) y1, precision); \
+                        jim_member_key(&jim, "reference_haversine") ; jim_float(&jim, (float) hd, precision); \
+                    jim_object_end(&jim);                                                                     \
+                    if (count == 0) {                                                                         \
+                        avg_hd = hd;                                                                          \
+                    } else {                                                                                  \
+                        avg_hd = ((avg_hd * count) + hd) / (count + 1);                                       \
+                    }                                                                                         \
+                }
+
+            case UNIFORM: {
+                #define custom_stmt
+                #define random_x random_double(-180, 180)
+                #define random_y random_double(-90, 90)
+                populate_points
+                #undef custom_stmt
+                #undef random_x
+                #undef random_y
+            } break;
+            case CLUSTER: {
+                #define NUM_CLUSTER 16
+                double x_mins[NUM_CLUSTER] = {0};
+                double x_maxs[NUM_CLUSTER] = {0};
+                double y_mins[NUM_CLUSTER] = {0};
+                double y_maxs[NUM_CLUSTER] = {0};
+                for (size_t i = 0; i < NUM_CLUSTER; i++) {
+                    x_mins[i] = random_double(-180, 180);
+                    x_maxs[i] = random_double(x_mins[i], 180);
+                    y_mins[i] = random_double(-90, 90);
+                    y_maxs[i] = random_double(y_mins[i], 90);
+                }
+                #define custom_stmt size_t i = random_size_t(NUM_CLUSTER);
+                #define random_x random_double(x_mins[i], x_maxs[i]);
+                #define random_y random_double(y_mins[i], y_maxs[i]);
+                populate_points
+                #undef custom_stmt
+                #undef random_x
+                #undef random_y
+            } break;
+            default: {
+                UNREACHABLE("Method");
+            }
+            }
+        jim_array_end(&jim);
+
+        jim_member_key(&jim, "seed");
+        jim_integer(&jim, (int) args.seed);
+
+        jim_member_key(&jim, "avg_reference_haversine");
+        jim_float(&jim, (float) avg_hd, precision);
+
+    jim_object_end(&jim);
+
+    if (jim.sink_count > 0) {
+        if (args.num_pair_points % buffer_size > 0) {
+            nob_log(INFO, "Writing %ld pairs into the file: %s", args.num_pair_points % buffer_size, args.out_file);
+        }
+        nob_log(INFO, "Writing rest of stuff to file: %s", args.out_file);
+        if (!fwrite(jim.sink, jim.sink_count, 1, out_file_fp)) return_defer(false);
+    }
+
+    nob_log(INFO, "Avg. Reference Haversine: %f", avg_hd);
+    nob_log(INFO, "Generated file: `%s`", args.out_file);
+    result = true;
+defer:
+    if (!result) {
+        nob_log(ERROR, "Error in generating file: `%s`", args.out_file);
+    }
+    if (out_file_fp != NULL) fclose(out_file_fp);
+    free(jim.sink);
+    free(jim.scopes);
+    return result;
+}
+
+int main(int argc, char **argv) {
+    int result = 1;
+    Arguments args = {0};
+    args.program = shift(argv, argc);
+    assert(args.program != NULL);
+    if (argc <= 0) {
+        usage(args.program);
+        nob_log(ERROR, "<method> not provided!");
+        return_defer(1);
+    }
+    const char *method_as_str = shift(argv, argc);
+    if (!parse_as_method(method_as_str, &args.method)) {
+        usage(args.program);
+        nob_log(ERROR, "Unknown <method> `%s` provided!", method_as_str);
+        return_defer(1);
+    }
+    if (argc <= 0) {
+        usage(args.program);
+        nob_log(ERROR, "<seed> not provided!");
+        return_defer(1);
+    }
+    const char *seed_as_str = shift(argv, argc);
+    if (!parse_cstr_as_long(seed_as_str, &args.seed)) {
+        usage(args.program);
+        return_defer(1);
+    }
+    if (argc <= 0) {
+        usage(args.program);
+        nob_log(ERROR, "<num_pair_points> not provided!");
+        return_defer(1);
+    }
+    const char *num_pair_points_as_str = shift(argv, argc);
+    if (!parse_cstr_as_long(num_pair_points_as_str, &args.num_pair_points)) {
+        usage(args.program);
+        return_defer(1);
+    }
+    if (argc <= 0) {
+        usage(args.program);
+        nob_log(ERROR, "<out_file> not provided!");
+        return_defer(1);
+    }
+    args.out_file = shift(argv, argc);
+
+    // nob_log(INFO, "Parsed arguments:");
+    // nob_log(INFO, "  <method>         : %d" , args.method);
+    // nob_log(INFO, "  <seed>           : %ld", args.seed);
+    // nob_log(INFO, "  <num_pair_points>: %ld", args.num_pair_points);
+    // nob_log(INFO, "  <out_file>       : %s" , args.out_file);
+
+    if (!generate(args)) return_defer(1);
+
+    result = 0;
+defer:
+    return result;
+}
