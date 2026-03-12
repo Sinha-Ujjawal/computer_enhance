@@ -2200,7 +2200,8 @@ NOBDEF bool nob_read_entire_file(const char *path, Nob_String_Builder *sb)
         sb->capacity = new_count;
     }
 
-    fread(sb->items + sb->count, m, 1, f);
+    size_t _unused = fread(sb->items + sb->count, m, 1, f);
+    NOB_UNUSED(_unused);
     if (ferror(f)) {
         // TODO: Afaik, ferror does not set errno. So the error reporting in defer is not correct in this case.
         nob_return_defer(false);

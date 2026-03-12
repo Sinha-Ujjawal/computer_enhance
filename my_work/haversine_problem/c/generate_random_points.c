@@ -73,8 +73,7 @@ void usage(const char *program) {
 }
 
 bool generate(Arguments args) {
-    static int precision = 10;
-    static long buffer_size = 10000;
+    static long buffer_size = 100000;
     bool result = false;
     FILE *out_file_fp = NULL;
     Jim jim = {0};
@@ -90,7 +89,6 @@ bool generate(Arguments args) {
     }
     srand(args.seed);
     jim_object_begin(&jim);
-        double avg_hd = 0.0;
         static double earth_radius = 6372.8;
         jim_member_key(&jim, "pairs");
         jim_array_begin(&jim);
@@ -109,17 +107,12 @@ bool generate(Arguments args) {
                     double y1 = random_y;                                                                     \
                     double hd = ReferenceHaversine(x0, y0, x1, y1, earth_radius);                             \
                     jim_object_begin(&jim);                                                                   \
-                        jim_member_key(&jim, "x0")                  ; jim_float(&jim, (float) x0, precision); \
-                        jim_member_key(&jim, "y0")                  ; jim_float(&jim, (float) y0, precision); \
-                        jim_member_key(&jim, "x1")                  ; jim_float(&jim, (float) x1, precision); \
-                        jim_member_key(&jim, "y1")                  ; jim_float(&jim, (float) y1, precision); \
-                        jim_member_key(&jim, "reference_haversine") ; jim_float(&jim, (float) hd, precision); \
+                        jim_member_key(&jim, "x0")                  ; jim_float(&jim, x0);                    \
+                        jim_member_key(&jim, "y0")                  ; jim_float(&jim, y0);                    \
+                        jim_member_key(&jim, "x1")                  ; jim_float(&jim, x1);                    \
+                        jim_member_key(&jim, "y1")                  ; jim_float(&jim, y1);                    \
+                        jim_member_key(&jim, "reference_haversine") ; jim_float(&jim, hd);                    \
                     jim_object_end(&jim);                                                                     \
-                    if (count == 0) {                                                                         \
-                        avg_hd = hd;                                                                          \
-                    } else {                                                                                  \
-                        avg_hd = ((avg_hd * count) + hd) / (count + 1);                                       \
-                    }                                                                                         \
                 }
 
             case UNIFORM: {
@@ -132,7 +125,7 @@ bool generate(Arguments args) {
                 #undef random_y
             } break;
             case CLUSTER: {
-                #define NUM_CLUSTER 16
+                #define NUM_CLUSTER 64
                 double x_mins[NUM_CLUSTER] = {0};
                 double x_maxs[NUM_CLUSTER] = {0};
                 double y_mins[NUM_CLUSTER] = {0};
@@ -160,9 +153,6 @@ bool generate(Arguments args) {
         jim_member_key(&jim, "seed");
         jim_integer(&jim, (int) args.seed);
 
-        jim_member_key(&jim, "avg_reference_haversine");
-        jim_float(&jim, (float) avg_hd, precision);
-
     jim_object_end(&jim);
 
     if (jim.sink_count > 0) {
@@ -173,7 +163,6 @@ bool generate(Arguments args) {
         if (!fwrite(jim.sink, jim.sink_count, 1, out_file_fp)) return_defer(false);
     }
 
-    nob_log(INFO, "Avg. Reference Haversine: %f", avg_hd);
     nob_log(INFO, "Generated file: `%s`", args.out_file);
     result = true;
 defer:

@@ -42,8 +42,7 @@ void jim_begin(Jim *jim);
 void jim_null(Jim *jim);
 void jim_bool(Jim *jim, int boolean);
 void jim_integer(Jim *jim, long long int x);
-// TODO: deprecate this version of jim_float introduce the one that does not require precision and uses something like sprintf from libc to render the floats
-void jim_float(Jim *jim, double x, int precision);
+void jim_float(Jim *jim, double x);
 void jim_string(Jim *jim, const char *str);
 void jim_string_sized(Jim *jim, const char *str, size_t size);
 
@@ -214,26 +213,15 @@ static int is_nan_or_inf(double x)
     return (((*(unsigned long long int*) &x) >> 52ULL) & mask) == mask;
 }
 
-void jim_float(Jim *jim, double x, int precision)
+void jim_float(Jim *jim, double x)
 {
     if (is_nan_or_inf(x)) {
         jim_null(jim);
     } else {
         jim_element_begin(jim);
-
-        jim_integer_no_element(jim, (long long int) x);
-        x -= (double) (long long int) x;
-        while (precision-- > 0) {
-            x *= 10.0;
-        }
-        jim_write_cstr(jim, ".");
-
-        long long int y = (long long int) x;
-        if (y < 0) {
-            y = -y;
-        }
-        jim_integer_no_element(jim, y);
-
+        char buffer[256];
+        int count = sprintf(buffer, "%f", x);
+        jim_write(jim, buffer, count);
         jim_element_end(jim);
     }
 }
