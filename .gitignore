@@ -6,4 +6,7 @@
 *.gdb_history
 my_work/8086/instruction_decoding/temp/
 my_work/8086/instruction_decoding/dasm8086
+my_work/five_multipliers/2_ipc_or_ilp
 my_work/haversine_problem/c/generate_random_points
+my_work/haversine_problem/c/test
+my_work/haversine_problem/c/parse_pair_points
