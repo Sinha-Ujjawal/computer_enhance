@@ -5,8 +5,12 @@
 #include "thirdparty/nob.h"
 #define JIMP_IMPLEMENTATION
 #include "thirdparty/jimp.h"
+#define NOB_PROFILER_IMPLEMENTATION
+#include "thirdparty/nob_profiler.h"
 
 #include "reference_haversine.c"
+
+Profiler profiler = {0};
 
 typedef struct {
     double x0;
@@ -68,37 +72,32 @@ bool parse_pair_point(Jimp *jimp, PairPoint *p) {
     return jimp_object_end(jimp) && all_members_found;
 }
 
-bool parse_pair_points_from_json(const char *json_file, PairPoints *pts) {
-    nob_log(INFO, "Parsing file: %s", json_file);
-    bool result = false;
-    String_Builder sb = {0};
-    Jimp jimp = {0};
-    if (!read_entire_file(json_file, &sb)) return_defer(false);
-    jimp_begin(&jimp, json_file, sb.items, sb.count);
-    if (!jimp_object_begin(&jimp)) return_defer(false);
-    while(jimp_object_member(&jimp)) {
-        if (strcmp(jimp.string, "pairs") == 0) {
-            if (!jimp_array_begin(&jimp)) return_defer(false);
-            while(jimp_array_item(&jimp)) {
-                PairPoint p;
-                if (!parse_pair_point(&jimp, &p)) return_defer(false);
-                // printf("x0: %f, y0: %f, x1: %f, y1: %f\n", p.x0, p.y0, p.x1, p.y1);
-                da_append(pts, p);
-            }
-            if (!jimp_array_end(&jimp)) return_defer(false);
-        } else if (strcmp(jimp.string, "seed") == 0) {
-            if (!jimp_number(&jimp)) return_defer(false);
-            pts->seed = jimp.number;
+bool parse_pair_points_from_json(Jimp *jimp, PairPoints *pts) {
+    nob_log(INFO, "Parsing file: %s", jimp->file_path);
+    if (!jimp_object_begin(jimp)) return false;
+    while(jimp_object_member(jimp)) {
+        if (strcmp(jimp->string, "pairs") == 0) {
+            start_profile(&profiler, "Parsing Pairs"); {
+                if (!jimp_array_begin(jimp)) return false;
+                while(jimp_array_item(jimp)) {
+                    start_profile(&profiler, "Parsing Pair"); {
+                        PairPoint p;
+                        if (!parse_pair_point(jimp, &p)) return false;
+                        // printf("x0: %f, y0: %f, x1: %f, y1: %f\n", p.x0, p.y0, p.x1, p.y1);
+                        da_append(pts, p);
+                    } end_profile(&profiler);
+                }
+                if (!jimp_array_end(jimp)) return false;
+            } end_profile(&profiler);
+        } else if (strcmp(jimp->string, "seed") == 0) {
+            if (!jimp_number(jimp)) return false;
+            pts->seed = jimp->number;
         } else {
-            jimp_skip_member(&jimp);
+            jimp_skip_member(jimp);
         }
     }
-    if (!jimp_object_end(&jimp)) return_defer(false);
-    result = true;
-defer:
-    free(sb.items);
-    free(jimp.string);
-    return result;
+    if (!jimp_object_end(jimp)) return false;
+    return true;
 }
 
 typedef struct {
@@ -115,8 +114,12 @@ void usage(const char *program) {
 
 int main(int argc, char **argv) {
     int result = 1;
+
     PairPoints pts = {0};
     Arguments args = {0};
+    String_Builder sb = {0};
+    Jimp jimp = {0};
+
     args.program = shift(argv, argc);
     if (argc <= 0) {
         usage(args.program);
@@ -128,21 +131,36 @@ int main(int argc, char **argv) {
     nob_log(INFO, "  Program  : %s", args.program);
     nob_log(INFO, "  JSON File: %s", args.json_file);
 
-    if(!parse_pair_points_from_json(args.json_file, &pts)) return_defer(1);
-    nob_log(INFO, "No. of pair points: %zu", pts.count);
-    nob_log(INFO, "Seed: %f", pts.seed);
+    reset_profiler(&profiler);
 
-    nob_log(INFO, "\nValidation:");
-    static double earth_radius = 6372.8;
-    double diff = 0.0;
-    da_foreach(PairPoint, it, &pts) {
-        double calc_hd = ReferenceHaversine(it->x0, it->y0, it->x1, it->y1, earth_radius);
-        diff += calc_hd - it->reference_haversine;
-    }
-    nob_log(INFO, "Difference: %f", diff);
+    start_profile(&profiler, "Reading File"); {
+        if (!read_entire_file(args.json_file, &sb)) return_defer(false);
+    } end_profile(&profiler);
+
+    start_profile(&profiler, "Parsing"); {
+        jimp_begin(&jimp, args.json_file, sb.items, sb.count);
+        if(!parse_pair_points_from_json(&jimp, &pts)) return_defer(1);
+        nob_log(INFO, "No. of pair points: %zu", pts.count);
+        nob_log(INFO, "Seed: %f", pts.seed);
+    } end_profile(&profiler);
+
+    start_profile(&profiler, "Validation"); {
+        nob_log(INFO, "Validation:");
+        static double earth_radius = 6372.8;
+        double diff = 0.0;
+        da_foreach(PairPoint, it, &pts) {
+            double calc_hd = ReferenceHaversine(it->x0, it->y0, it->x1, it->y1, earth_radius);
+            diff += calc_hd - it->reference_haversine;
+        }
+        nob_log(INFO, "Difference: %f", diff);
+    } end_profile(&profiler);
+
+    log_profiler(profiler);
 
     result = 0;
 defer:
     free(pts.items);
+    free(sb.items);
+    free(jimp.string);
     return result;
 }
