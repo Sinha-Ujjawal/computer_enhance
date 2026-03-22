@@ -5,6 +5,8 @@
 #include "thirdparty/nob.h"
 #define JIMP_IMPLEMENTATION
 #include "thirdparty/jimp.h"
+// #define NOB_PROFILER_BLOCK_TIMER nob_read_os_timer
+// #define NOB_PROFILER_BLOCK_TIMER_FREQ nob_get_os_timer_freq()
 #define NOB_PROFILER_IMPLEMENTATION
 #include "thirdparty/nob_profiler.h"
 
@@ -35,29 +37,32 @@ bool parse_pair_point(Jimp *jimp, PairPoint *p) {
     bool y1_found = false;
     bool reference_haversine_found = false;
     while(jimp_object_member(jimp)) {
+        bool result = true;
         if (strcmp(jimp->string, "x0") == 0) {
-            if (!jimp_number(jimp)) return false;
+            if (!jimp_number(jimp)) return_defer(false);
             p->x0 = jimp->number;
             x0_found = true;
         } else if (strcmp(jimp->string, "y0") == 0) {
-            if (!jimp_number(jimp)) return false;
+            if (!jimp_number(jimp)) return_defer(false);
             p->y0 = jimp->number;
             y0_found = true;
         } else if (strcmp(jimp->string, "x1") == 0) {
-            if (!jimp_number(jimp)) return false;
+            if (!jimp_number(jimp)) return_defer(false);
             p->x1 = jimp->number;
             x1_found = true;
         } else if (strcmp(jimp->string, "y1") == 0) {
-            if (!jimp_number(jimp)) return false;
+            if (!jimp_number(jimp)) return_defer(false);
             p->y1 = jimp->number;
             y1_found = true;
         } else if (strcmp(jimp->string, "reference_haversine") == 0) {
-            if (!jimp_number(jimp)) return false;
+            if (!jimp_number(jimp)) return_defer(false);
             p->reference_haversine = jimp->number;
             reference_haversine_found = true;
         } else {
             jimp_skip_member(jimp);
         }
+    defer:
+        if (!result) return false;
     }
     bool all_members_found = x0_found && y0_found && x1_found && y1_found && reference_haversine_found;
     if (!all_members_found) {
@@ -85,10 +90,10 @@ bool parse_pair_points_from_json(Jimp *jimp, PairPoints *pts) {
                         if (!parse_pair_point(jimp, &p)) return false;
                         // printf("x0: %f, y0: %f, x1: %f, y1: %f\n", p.x0, p.y0, p.x1, p.y1);
                         da_append(pts, p);
-                    } end_profile(&profiler);
+                    } end_profile(&profiler, 0);
                 }
                 if (!jimp_array_end(jimp)) return false;
-            } end_profile(&profiler);
+            } end_profile(&profiler, 0);
         } else if (strcmp(jimp->string, "seed") == 0) {
             if (!jimp_number(jimp)) return false;
             pts->seed = jimp->number;
@@ -133,16 +138,18 @@ int main(int argc, char **argv) {
 
     reset_profiler(&profiler);
 
-    start_profile(&profiler, "Reading File"); {
-        if (!read_entire_file(args.json_file, &sb)) return_defer(false);
-    } end_profile(&profiler);
+    start_profile(&profiler, "Reading and Parsing"); {
+        start_profile(&profiler, "Reading File"); {
+            if (!read_entire_file(args.json_file, &sb)) return_defer(false);
+        } end_profile(&profiler, sb.count);
 
-    start_profile(&profiler, "Parsing"); {
-        jimp_begin(&jimp, args.json_file, sb.items, sb.count);
-        if(!parse_pair_points_from_json(&jimp, &pts)) return_defer(1);
-        nob_log(INFO, "No. of pair points: %zu", pts.count);
-        nob_log(INFO, "Seed: %f", pts.seed);
-    } end_profile(&profiler);
+        start_profile(&profiler, "Parsing"); {
+            jimp_begin(&jimp, args.json_file, sb.items, sb.count);
+            if(!parse_pair_points_from_json(&jimp, &pts)) return_defer(1);
+            nob_log(INFO, "No. of pair points: %zu", pts.count);
+            nob_log(INFO, "Seed: %f", pts.seed);
+        } end_profile(&profiler, sb.count);
+    } end_profile(&profiler, sb.count);
 
     start_profile(&profiler, "Validation"); {
         nob_log(INFO, "Validation:");
@@ -153,14 +160,15 @@ int main(int argc, char **argv) {
             diff += calc_hd - it->reference_haversine;
         }
         nob_log(INFO, "Difference: %f", diff);
-    } end_profile(&profiler);
-
-    log_profiler(profiler);
+    } end_profile(&profiler, pts.count * sizeof(PairPoint));
 
     result = 0;
 defer:
-    free(pts.items);
-    free(sb.items);
-    free(jimp.string);
+    start_profile(&profiler, "Freeing Memory"); {
+        free(pts.items);
+        free(sb.items);
+        free(jimp.string);
+    } end_profile(&profiler, 0);
+    log_profiler(profiler);
     return result;
 }
