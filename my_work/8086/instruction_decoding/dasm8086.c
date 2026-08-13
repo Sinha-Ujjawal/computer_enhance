@@ -198,6 +198,30 @@ typedef enum {
     OP_KIND_COUNT,
 } Op_Kind;
 
+typedef enum {
+    Arity_Zero,
+    Arity_Unary,
+    Arity_Binary,
+} Op_Arity;
+
+typedef enum {
+    Arg_Immediate,
+    Arg_Register,
+} Op_Args_Kind;
+
+typedef struct {
+    Op_Kind      kind;
+    Op_Arity     arity;
+    u16          args[2];
+    Op_Args_Kind args_kind[2];
+} Op;
+
+typedef struct {
+    Op     *items;
+    size_t count;
+    size_t capacity;
+} Ops;
+
 static inline bool ensure_next_n_bytes(const char *asm_binary_file, Nob_String_Builder insts, u32 i, u8 n) {
     if (i >= insts.count) {
         nob_log(NOB_ERROR, "Index out of bounds (i: %d) when checking next n bytes", i);
@@ -970,7 +994,7 @@ static inline bool get_op_kind(const char *asm_binary_file, Nob_String_Builder i
     return false;
 }
 
-static inline bool handle_dw_mod_reg_rm_displo_disphi(const char *inst_name, const char *asm_binary_file, Nob_String_Builder insts, u32 i, u32 *next_i, Nob_String_Builder *out, bool print_dst) {
+static inline bool handle_dw_mod_reg_rm_displo_disphi(const char *inst_name, const char *asm_binary_file, Nob_String_Builder insts, u32 i, u32 *next_i, Ops *out, bool print_dst) {
     // 0bOPCODE[d][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
     if (!ensure_next_n_bytes(asm_binary_file, insts, i, 1)) return false;
     u8 byte = (u8) insts.items[i];
@@ -1040,7 +1064,7 @@ static inline bool handle_dw_mod_reg_rm_displo_disphi(const char *inst_name, con
     return true;
 }
 
-static inline bool handle_sw_mod_rm_displo_disphi_data(const char *inst_name, const char *asm_binary_file, Nob_String_Builder insts, u32 i, u32 *next_i, Nob_String_Builder *out, bool sign_bit) {
+static inline bool handle_sw_mod_rm_displo_disphi_data(const char *inst_name, const char *asm_binary_file, Nob_String_Builder insts, u32 i, u32 *next_i, Ops *out, bool sign_bit) {
     // if sign_bit = false
     // 0bOPCODE[w]    [mod]???[r/m] [(disp-lo)] [(disp-hi)] [data] [data if w = 1]
     // if sign_bit = true
@@ -1108,7 +1132,7 @@ static inline bool handle_sw_mod_rm_displo_disphi_data(const char *inst_name, co
     return true;
 }
 
-static inline bool handle_arith_imm_to_acc(const char *inst_name, const char *asm_binary_file, Nob_String_Builder insts, u32 i, u32 *next_i, Nob_String_Builder *out, const char *acc_reg, bool read_two_bytes) {
+static inline bool handle_arith_imm_to_acc(const char *inst_name, const char *asm_binary_file, Nob_String_Builder insts, u32 i, u32 *next_i, Ops *out, const char *acc_reg, bool read_two_bytes) {
     // 0bOPCODE[w] [data] [data if w = 1]
     u8 byte = (u8) insts.items[i];
     u8 w = byte & 0b01;
@@ -1131,7 +1155,7 @@ static inline bool handle_arith_imm_to_acc(const char *inst_name, const char *as
     return true;
 }
 
-static inline bool handle_jumps(const char *inst_name, const char *asm_binary_file, Nob_String_Builder insts, u32 i, u32 *next_i, Nob_String_Builder *out) {
+static inline bool handle_jumps(const char *inst_name, const char *asm_binary_file, Nob_String_Builder insts, u32 i, u32 *next_i, Ops *out) {
     // 0b01110101 [IP-INC8]
     if (!ensure_next_n_bytes(asm_binary_file, insts, i, 2)) return false;
     s16 ip_inc8 = (s16) (s8) insts.items[i + 1]; *next_i += 1;
@@ -1139,7 +1163,7 @@ static inline bool handle_jumps(const char *inst_name, const char *asm_binary_fi
     return true;
 }
 
-static inline bool handle_vw_mod_reg_rm_displo_disphi(const char *inst_name, const char *asm_binary_file, Nob_String_Builder insts, u32 i, u32 *next_i, Nob_String_Builder *out) {
+static inline bool handle_vw_mod_reg_rm_displo_disphi(const char *inst_name, const char *asm_binary_file, Nob_String_Builder insts, u32 i, u32 *next_i, Ops *out) {
     // 0bOPCODE[v][w] [mod][reg][r/m] [(disp-lo)] [(disp-hi)]
     // v: 0 Shift/rotate count is one
     //    1 Shift/rotate count is in CL register
@@ -1191,7 +1215,7 @@ static inline bool handle_vw_mod_reg_rm_displo_disphi(const char *inst_name, con
     return true;
 }
 
-s64 decode_one(const char *asm_binary_file, Nob_String_Builder insts, u32 i, Nob_String_Builder *out) {
+s64 decode_one(const char *asm_binary_file, Nob_String_Builder insts, u32 i, Ops *out) {
     s64 result = -1;
     u8 byte = (u8) insts.items[i];
     u32 next_i = i + 1;
@@ -1866,7 +1890,7 @@ defer:
     return result;
 }
 
-bool decode(const char *asm_binary_file, Nob_String_Builder *out) {
+bool decode(const char *asm_binary_file, Ops *out) {
     bool result = false;
     Nob_String_Builder insts = {0};
     if (!nob_read_entire_file(asm_binary_file, &insts)) nob_return_defer(false);

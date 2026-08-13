@@ -12,6 +12,7 @@
 #define JIM_IMPLEMENTATION
 #define JIM_SCOPES_CAPACITY (1 << 16)
 #include "thirdparty/jim.h"
+#include "thirdparty/nob_fa.h"
 #define NOB_PROFILER_IMPLEMENTATION
 #include "thirdparty/nob_profiler.h"
 

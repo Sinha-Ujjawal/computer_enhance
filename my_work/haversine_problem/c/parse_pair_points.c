@@ -1,5 +1,7 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
 #define NOB_IMPLEMENTATION
 #include "thirdparty/nob.h"
@@ -7,12 +9,39 @@
 #include "thirdparty/jimp.h"
 // #define NOB_PROFILER_BLOCK_TIMER nob_read_os_timer
 // #define NOB_PROFILER_BLOCK_TIMER_FREQ nob_get_os_timer_freq()
+#include "thirdparty/nob_fa.h"
 #define NOB_PROFILER_IMPLEMENTATION
 #include "thirdparty/nob_profiler.h"
+#define NOB_HUGE_PAGE_ALLOC_IMPLEMENTATION
+#include "thirdparty/nob_huge_page_alloc.h"
 
 #include "reference_haversine.c"
 
 Profiler profiler = {0};
+
+bool compute_file_size(const char *file_path, size_t *out) {
+    bool result = false;
+    FILE *f = fopen(file_path, "rb");
+    long long m = 0;
+    if (f == NULL)                 return_defer(false);
+    if (fseek(f, 0, SEEK_END) < 0) return_defer(false);
+#ifndef _WIN32
+    m = ftell(f);
+#else
+    m = _telli64(_fileno(f));
+#endif
+    if (m < 0)                     return_defer(false);
+    if (fseek(f, 0, SEEK_SET) < 0) return_defer(false);
+    if (out != NULL) {
+        *out = m;
+    }
+
+    result = true;
+defer:
+    if (!result) nob_log(NOB_ERROR, "Could not read file %s: %s", file_path, strerror(errno));
+    if (f) fclose(f);
+    return result;
+}
 
 typedef struct {
     double x0;
@@ -123,6 +152,7 @@ int main(int argc, char **argv) {
     PairPoints pts = {0};
     Arguments args = {0};
     String_Builder sb = {0};
+    Huge_Page_Buffer huge_page_buf = {0};
     Jimp jimp = {0};
 
     args.program = shift(argv, argc);
@@ -140,6 +170,13 @@ int main(int argc, char **argv) {
 
     start_profile(&profiler, "Reading and Parsing"); {
         start_profile(&profiler, "Reading File"); {
+            size_t file_size = 0;
+            if (!compute_file_size(args.json_file, &file_size)) return_defer(false);
+            if (try_alloc_huge_page(&huge_page_buf, file_size)) {
+                nob_log(INFO, "Using Huge Pages!");
+                sb.items = huge_page_buf.ptr;
+                sb.capacity = huge_page_buf.rounded_size;
+            }
             if (!read_entire_file(args.json_file, &sb)) return_defer(false);
         } end_profile(&profiler, sb.count);
 
@@ -166,7 +203,10 @@ int main(int argc, char **argv) {
 defer:
     start_profile(&profiler, "Freeing Memory"); {
         free(pts.items);
-        free(sb.items);
+        if (huge_page_buf.ptr != NULL)
+            free_huge_page(&huge_page_buf);
+        else
+            free(sb.items);
         free(jimp.string);
     } end_profile(&profiler, 0);
     log_profiler(profiler);
