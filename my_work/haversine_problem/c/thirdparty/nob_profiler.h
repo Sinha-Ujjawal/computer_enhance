@@ -160,7 +160,11 @@ bool nob_repeatition_tester_is_testing(Nob_Repeatition_Tester *tester);
         nob_log(INFO, "END: repeatition_%s\n", label);                                                             \
     } while(0);
 
+#endif // NOB_PROFILER_H_
+
 #ifdef NOB_PROFILER_IMPLEMENTATION
+#ifndef NOB_PROFILER_IMPLEMENTATION_GAURD_
+#define NOB_PROFILER_IMPLEMENTATION_GAURD_
 
 #if _WIN32
 
@@ -558,6 +562,7 @@ bool nob_repeatition_tester_is_testing(Nob_Repeatition_Tester *tester) {
     return tester->mode == NOB_REPEATITION_MODE_TESTING;
 }
 
+#endif // NOB_PROFILER_IMPLEMENTATION_GAURD_
 #endif // NOB_PROFILER_IMPLEMENTATION
 
 #ifndef NOB_PROFILER_STRIP_PREFIX_GUARD_
@@ -599,5 +604,3 @@ bool nob_repeatition_tester_is_testing(Nob_Repeatition_Tester *tester) {
             #define repeatition_test                    nob_repeatition_test
     #endif // NOB_UNSTRIP_PREFIX
 #endif // NOB_PROFILER_STRIP_PREFIX_GUARD_
-
-#endif // NOB_PROFILER_H_

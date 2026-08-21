@@ -7,17 +7,14 @@
 #include "thirdparty/nob.h"
 #define JIMP_IMPLEMENTATION
 #include "thirdparty/jimp.h"
-// #define NOB_PROFILER_BLOCK_TIMER nob_read_os_timer
-// #define NOB_PROFILER_BLOCK_TIMER_FREQ nob_get_os_timer_freq()
 #include "thirdparty/nob_fa.h"
 #define NOB_PROFILER_IMPLEMENTATION
 #include "thirdparty/nob_profiler.h"
 #define NOB_HUGE_PAGE_ALLOC_IMPLEMENTATION
 #include "thirdparty/nob_huge_page_alloc.h"
+#include "thirdparty/num_defs.h"
 
 #include "reference_haversine.c"
-
-Profiler profiler = {0};
 
 bool compute_file_size(const char *file_path, size_t *out) {
     bool result = false;
@@ -111,18 +108,14 @@ bool parse_pair_points_from_json(Jimp *jimp, PairPoints *pts) {
     if (!jimp_object_begin(jimp)) return false;
     while(jimp_object_member(jimp)) {
         if (strcmp(jimp->string, "pairs") == 0) {
-            start_profile(&profiler, "Parsing Pairs"); {
-                if (!jimp_array_begin(jimp)) return false;
-                while(jimp_array_item(jimp)) {
-                    start_profile(&profiler, "Parsing Pair"); {
-                        PairPoint p;
-                        if (!parse_pair_point(jimp, &p)) return false;
-                        // printf("x0: %f, y0: %f, x1: %f, y1: %f\n", p.x0, p.y0, p.x1, p.y1);
-                        da_append(pts, p);
-                    } end_profile(&profiler, 0);
-                }
-                if (!jimp_array_end(jimp)) return false;
-            } end_profile(&profiler, 0);
+            if (!jimp_array_begin(jimp)) return false;
+            while(jimp_array_item(jimp)) {
+                PairPoint p;
+                if (!parse_pair_point(jimp, &p)) return false;
+                // printf("x0: %f, y0: %f, x1: %f, y1: %f\n", p.x0, p.y0, p.x1, p.y1);
+                da_append(pts, p);
+            }
+            if (!jimp_array_end(jimp)) return false;
         } else if (strcmp(jimp->string, "seed") == 0) {
             if (!jimp_number(jimp)) return false;
             pts->seed = jimp->number;
@@ -166,49 +159,46 @@ int main(int argc, char **argv) {
     nob_log(INFO, "  Program  : %s", args.program);
     nob_log(INFO, "  JSON File: %s", args.json_file);
 
-    reset_profiler(&profiler);
+    size_t file_size = 0;
+    if (!compute_file_size(args.json_file, &file_size)) return_defer(false);
+    if (try_alloc_huge_page(&huge_page_buf, file_size)) {
+        nob_log(INFO, "Using Huge Pages!");
+        sb.items = huge_page_buf.ptr;
+        sb.capacity = huge_page_buf.rounded_size;
+    }
+    if (!read_entire_file(args.json_file, &sb)) return_defer(false);
 
-    start_profile(&profiler, "Reading and Parsing"); {
-        start_profile(&profiler, "Reading File"); {
-            size_t file_size = 0;
-            if (!compute_file_size(args.json_file, &file_size)) return_defer(false);
-            if (try_alloc_huge_page(&huge_page_buf, file_size)) {
-                nob_log(INFO, "Using Huge Pages!");
-                sb.items = huge_page_buf.ptr;
-                sb.capacity = huge_page_buf.rounded_size;
-            }
-            if (!read_entire_file(args.json_file, &sb)) return_defer(false);
-        } end_profile(&profiler, sb.count);
-
-        start_profile(&profiler, "Parsing"); {
-            jimp_begin(&jimp, args.json_file, sb.items, sb.count);
-            if(!parse_pair_points_from_json(&jimp, &pts)) return_defer(1);
-            nob_log(INFO, "No. of pair points: %zu", pts.count);
-            nob_log(INFO, "Seed: %f", pts.seed);
-        } end_profile(&profiler, sb.count);
-    } end_profile(&profiler, sb.count);
-
-    start_profile(&profiler, "Validation"); {
-        nob_log(INFO, "Validation:");
+    jimp_begin(&jimp, args.json_file, sb.items, sb.count);
+    if(!parse_pair_points_from_json(&jimp, &pts)) return_defer(1);
+    nob_log(INFO, "No. of pair points: %zu", pts.count);
+    nob_log(INFO, "Seed: %f", pts.seed);
+    
+    Repeatition_Tester tester = {0};
+    u64 cpu_timer_freq = (u64) guess_cpu_timer_freq(100);
+    u64 seconds_to_try = 10;
+    repeatition_tester_new_test_wave(&tester, pts.count * sizeof(PairPoint), cpu_timer_freq, seconds_to_try);
+    nob_log(INFO, "Validation:");
+    double diff = 0.0;
+    while (repeatition_tester_is_testing(&tester)) {
         static double earth_radius = 6372.8;
-        double diff = 0.0;
-        da_foreach(PairPoint, it, &pts) {
-            double calc_hd = ReferenceHaversine(it->x0, it->y0, it->x1, it->y1, earth_radius);
-            diff += calc_hd - it->reference_haversine;
-        }
-        nob_log(INFO, "Difference: %f", diff);
-    } end_profile(&profiler, pts.count * sizeof(PairPoint));
+        diff = 0.0;
+        repeatition_tester_begin_timer(&tester); {
+            da_foreach(PairPoint, it, &pts) {
+                double calc_hd = ReferenceHaversine(it->x0, it->y0, it->x1, it->y1, earth_radius);
+                diff += calc_hd - it->reference_haversine;
+            }
+        } repeatition_tester_end_timer(&tester);
+        repeatition_tester_count_bytes(&tester, pts.count * sizeof(PairPoint));
+    }
+    nob_log(INFO, "Difference: %f", diff);
 
     result = 0;
 defer:
-    start_profile(&profiler, "Freeing Memory"); {
-        free(pts.items);
-        if (huge_page_buf.ptr != NULL)
-            free_huge_page(&huge_page_buf);
-        else
-            free(sb.items);
-        free(jimp.string);
-    } end_profile(&profiler, 0);
-    log_profiler(profiler);
+    free(pts.items);
+    if (huge_page_buf.ptr != NULL)
+        free_huge_page(&huge_page_buf);
+    else
+        free(sb.items);
+    free(jimp.string);
     return result;
 }

@@ -46,7 +46,7 @@ Setup B:
 |6     |Load3 (D) |
 It takes 6 hours to do in Setup B. This is `throughput`. `Throughput` is defined as the *amount of operations it can do in a unit time* (*ops/time*)
 
-So it is cleary can be seen that Setup A is much better than Setup B, even though the latency of both the setups are same. The throughput is what differentiates Setup A to be favourable. If you have lot of clothes to launder, then Setup A is much better. At homes, people usually prefer Setup B though, because it eliminates the need for manually transfer the load from one machine to the other. It is very important to note that which setup is better depends how much load we are going to put.
+So it is clearly can be seen that Setup A is much better than Setup B, even though the latency of both the setups are same. The throughput is what differentiates Setup A to be favorable. If you have lot of clothes to launder, then Setup A is much better. At homes, people usually prefer Setup B though, because it eliminates the need for manually transfer the load from one machine to the other. It is very important to note that which setup is better depends how much load we are going to put.
 
 Note that in the community people usually talk about the reciprocal of the throughput to make the units aligned between latency and "reciprocal" throughput. Also they might might drop "reciprocal" and just call it throughput, so don't get confused by the terms. Understand what they mean. One is talking about single load (latency), and the other is talking about multiple loads (throughput).
 
